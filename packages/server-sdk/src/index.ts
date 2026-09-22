@@ -1,6 +1,6 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose'
 
-export type AppSdkConfig = {
+export type AgentConnectIntegrationConfig = {
   name: string
   mcpUrl: string
   oauth: {
@@ -56,7 +56,7 @@ function equalHash(left: string, right: string): boolean {
   return difference === 0
 }
 
-export function createAppSdk(config: AppSdkConfig) {
+export function createAgentConnectIntegration(config: AgentConnectIntegrationConfig) {
   if (!config.name.trim() || !config.oauth.clientId.trim()) throw new Error('Name and public OAuth client ID are required')
   const mcpUrl = httpsUrl(config.mcpUrl)
   const authorizationUrl = httpsUrl(config.oauth.authorizationUrl)

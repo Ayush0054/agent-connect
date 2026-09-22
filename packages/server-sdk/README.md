@@ -1,4 +1,4 @@
-# App SDK
+# Server SDK
 
 Install this package in an application backend that already has an OAuth authorization server and a remote MCP server. A web app, SaaS service, or native app with a hosted backend can use the same package. It does two jobs:
 
@@ -6,9 +6,9 @@ Install this package in an application backend that already has an OAuth authori
 2. Verify the app OAuth token plus Agent Connect's signed, short-lived agent assertion for each MCP tool call.
 
 ```ts
-import { createAppSdk, AgentConnectAuthError } from '@agent-connect/app-sdk'
+import { createAgentConnectIntegration, AgentConnectAuthError } from '@agent-connect/server-sdk'
 
-const connect = createAppSdk({
+const connect = createAgentConnectIntegration({
   name: 'Notes',
   mcpUrl: 'https://notes.example.com/mcp',
   oauth: {
