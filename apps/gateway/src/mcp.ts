@@ -1,20 +1,23 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { createMcpHandler, fromJsonSchema, McpServer } from '@modelcontextprotocol/server'
 import { execute, first, rows, trustedUrl, type Agent, type Connection, type Env, type Grant } from './core'
-import { websiteToken } from './oauth'
+import { appToken } from './oauth'
+import { agentAssertion } from './assertion'
 
-export async function remoteClient(connection: Connection, env: Env): Promise<Client> {
-  const token = await websiteToken(connection, env)
+export async function remoteClient(connection: Connection, env: Env, agent?: Agent, toolName?: string): Promise<Client> {
+  const token = await appToken(connection, env)
+  const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
+  if (agent && toolName) headers['Agent-Connect-Assertion'] = await agentAssertion(agent, connection, toolName, token, env)
   const client = new Client({ name: 'agent-connect', version: '0.1.0' }, { versionNegotiation: { mode: 'auto' } })
   const transport = new StreamableHTTPClientTransport(new URL(trustedUrl(connection.mcp_url)), {
-    requestInit: { headers: { Authorization: `Bearer ${token}` }, redirect: 'error' },
+    requestInit: { headers, redirect: 'error' },
   })
   await client.connect(transport)
   return client
 }
 
-export async function discoverTools(connection: Connection, env: Env) {
-  const client = await remoteClient(connection, env)
+export async function discoverTools(connection: Connection, env: Env, agent?: Agent) {
+  const client = await remoteClient(connection, env, agent, agent ? 'tools/list' : undefined)
   try {
     const result = await client.listTools()
     return result.tools
@@ -52,7 +55,7 @@ export async function serveMcp(request: Request, agent: Agent, env: Env): Promis
       const connection = await first<Connection>(env, 'SELECT * FROM connections WHERE id = ? AND owner_sub = ?', [id, agent.owner_sub])
       if (!connection?.access_token_ciphertext) continue
       let tools: Awaited<ReturnType<typeof discoverTools>>
-      try { tools = await discoverTools(connection, env) } catch { continue }
+      try { tools = await discoverTools(connection, env, agent) } catch { continue }
       for (const tool of tools.slice(0, 100)) {
         if (!allowed.has(tool.name)) continue
         const name = `${connection.id}__${tool.name}`
@@ -65,13 +68,13 @@ export async function serveMcp(request: Request, agent: Agent, env: Env): Promis
           }
           let downstream: Client | undefined
           try {
-            downstream = await remoteClient(connection, env)
+            downstream = await remoteClient(connection, env, agent, tool.name)
             const result = await downstream.callTool({ name: tool.name, arguments: args }, { toolDefinition: tool })
             await recordAction(agent, connection, tool.name, result.isError ? 'tool_error' : 'success', env)
             return result
           } catch {
             await recordAction(agent, connection, tool.name, 'transport_error', env)
-            return { isError: true, content: [{ type: 'text', text: 'Website tool call failed' }] }
+            return { isError: true, content: [{ type: 'text', text: 'App tool call failed' }] }
           } finally {
             await downstream?.close()
           }

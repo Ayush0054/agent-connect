@@ -2,14 +2,15 @@ import { Hono, type Context, type MiddlewareHandler } from 'hono'
 import { accessOwner, agentFromBearer, execute, first, randomString, rows, sha256, trustedUrl, type Agent, type Connection, type Env, type Grant } from './core'
 import { discoverTools, serveMcp } from './mcp'
 import { oauthCallback, startOAuth } from './oauth'
-import { dashboard } from './ui'
+import { publicJwks } from './assertion'
+import { discoverApp } from './discovery'
 
 type AppEnv = { Bindings: Env; Variables: { owner: string } }
 const app = new Hono<AppEnv>()
 
 app.use('*', async (c, next) => {
   await next()
-  c.header('Cache-Control', 'no-store')
+  if (new URL(c.req.url).pathname !== '/.well-known/agent-connect/jwks.json') c.header('Cache-Control', 'no-store')
   c.header('Referrer-Policy', 'no-referrer')
   c.header('X-Content-Type-Options', 'nosniff')
 })
@@ -35,6 +36,11 @@ app.onError((error, c) => {
 
 app.get('/health', c => c.json({ ok: true }))
 
+app.get('/.well-known/agent-connect/jwks.json', c => {
+  if (new URL(c.req.url).host !== new URL(c.env.MCP_BASE_URL).host) return c.text('Invalid host', 400)
+  return c.json(publicJwks(c.env), 200, { 'Cache-Control': 'public, max-age=300' })
+})
+
 app.all('/mcp', async c => {
   if (new URL(c.req.url).host !== new URL(c.env.MCP_BASE_URL).host) return c.text('Invalid host', 400)
   const origin = c.req.header('Origin')
@@ -45,10 +51,12 @@ app.all('/mcp', async c => {
 })
 
 app.use('/', adminAuth)
+app.use('/assets/*', adminAuth)
 app.use('/api/*', adminAuth)
 app.use('/oauth/callback', adminAuth)
 
-app.get('/', c => c.html(dashboard))
+app.get('/', c => c.env.ASSETS.fetch(c.req.raw))
+app.get('/assets/*', c => c.env.ASSETS.fetch(c.req.raw))
 
 app.get('/oauth/callback', c => oauthCallback(c.req.raw, c.get('owner'), c.env))
 
@@ -86,15 +94,30 @@ app.post('/api/agents/:id/revoke', async c => {
 app.post('/api/connections', async c => {
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
-  const name = typeof body.name === 'string' ? body.name.trim() : ''
-  const clientId = typeof body.client_id === 'string' ? body.client_id.trim() : ''
-  const scope = typeof body.scope === 'string' ? body.scope.trim() : ''
+  let details = body
+  const appUrl = typeof body.app_url === 'string' ? body.app_url : body.website_url
+  if (typeof appUrl === 'string') {
+    try {
+      const manifest = await discoverApp(appUrl)
+      details = {
+        name: manifest.name,
+        mcp_url: manifest.mcp_url,
+        authorization_url: manifest.oauth.authorization_url,
+        token_url: manifest.oauth.token_url,
+        client_id: manifest.oauth.client_id,
+        scope: manifest.oauth.scope ?? '',
+      }
+    } catch { return c.json({ error: 'Could not discover this app. Check its Agent Connect manifest.' }, 422) }
+  }
+  const name = typeof details.name === 'string' ? details.name.trim() : ''
+  const clientId = typeof details.client_id === 'string' ? details.client_id.trim() : ''
+  const scope = typeof details.scope === 'string' ? details.scope.trim() : ''
   if (!name || name.length > 100 || !clientId || clientId.length > 2048 || scope.length > 2048) return c.json({ error: 'Invalid name, client ID, or scope' }, 400)
   let mcpUrl: string, authorizationUrl: string, tokenUrl: string
   try {
-    mcpUrl = trustedUrl(String(body.mcp_url ?? ''))
-    authorizationUrl = trustedUrl(String(body.authorization_url ?? ''))
-    tokenUrl = trustedUrl(String(body.token_url ?? ''))
+    mcpUrl = trustedUrl(String(details.mcp_url ?? ''))
+    authorizationUrl = trustedUrl(String(details.authorization_url ?? ''))
+    tokenUrl = trustedUrl(String(details.token_url ?? ''))
   } catch { return c.json({ error: 'Endpoints must be public HTTPS URLs' }, 400) }
   const id = crypto.randomUUID()
   await execute(c.env,
@@ -111,9 +134,9 @@ app.get('/api/connections/:id/authorize', async c => {
 
 app.get('/api/connections/:id/tools', async c => {
   const connection = await first<Connection>(c.env, 'SELECT * FROM connections WHERE id = ? AND owner_sub = ?', [c.req.param('id'), c.get('owner')])
-  if (!connection?.access_token_ciphertext) return c.json({ error: 'Website not connected' }, 409)
+  if (!connection?.access_token_ciphertext) return c.json({ error: 'App not connected' }, 409)
   try { return c.json({ tools: await discoverTools(connection, c.env) }) }
-  catch { return c.json({ error: 'Could not reach website MCP server' }, 502) }
+  catch { return c.json({ error: 'Could not reach app MCP server' }, 502) }
 })
 
 app.post('/api/connections/:id/disconnect', async c => {
@@ -140,8 +163,8 @@ app.post('/api/grants', async c => {
   if (!target) return c.json({ error: 'Agent, connection, or tool is invalid' }, 400)
   let tools: Awaited<ReturnType<typeof discoverTools>>
   try { tools = await discoverTools(target.connection, c.env) }
-  catch { return c.json({ error: 'Could not verify website tool' }, 502) }
-  if (!tools.some(tool => tool.name === target.toolName)) return c.json({ error: 'Website tool not found' }, 404)
+  catch { return c.json({ error: 'Could not verify app tool' }, 502) }
+  if (!tools.some(tool => tool.name === target.toolName)) return c.json({ error: 'App tool not found' }, 404)
   await execute(c.env, 'INSERT IGNORE INTO grants (agent_id, connection_id, tool_name) VALUES (?, ?, ?)', [target.agent.id, target.connection.id, target.toolName])
   return c.json({ ok: true })
 })

@@ -1,58 +1,53 @@
 # Agent Connect
 
-A framework-neutral MCP gateway for website tools. An owner signs in to the admin app with Cloudflare Access, connects a website with OAuth, creates an agent, and grants individual website tools. Agno, Codex, LangGraph, and other MCP hosts then use the same gateway URL with that agent's token.
+Agent Connect lets a user approve an app once, then grant its MCP tools to individual agents. Agno, Codex, LangGraph, and other MCP hosts all connect through the same gateway.
 
 ```text
-MCP host ── agent bearer token ──▶ Agent Connect Worker ── website OAuth token ──▶ Website MCP server
-                                   │
-                                   └── PlanetScale: agents, grants, encrypted tokens, action log
+Agent host ── gateway token ──▶ Hono gateway ── app OAuth token + signed agent identity ──▶ App MCP server
+                                │                                                        ▲
+                                ├── PlanetScale                                           │
+                                └── React control plane                           App SDK verifies
 ```
 
-## Stack
+## Monorepo
 
-- Hono + MCP TypeScript SDK on Cloudflare Workers
-- PlanetScale Vitess/MySQL through its HTTP driver
-- Cloudflare Access for the admin app
-- Web Crypto AES-GCM for website token encryption
+| Path | Purpose |
+| --- | --- |
+| `apps/gateway` | Hono Cloudflare Worker, OAuth connection flow, PlanetScale storage, MCP router, agent assertions |
+| `apps/web` | React + Vite control plane for connections, agents, grants, and activity |
+| `packages/app-sdk` | Framework-neutral TypeScript SDK for any app backend to publish discovery and verify agent requests |
 
-Agno is an optional MCP host, not a service dependency.
+The frontend is served as static assets by the gateway Worker on the admin origin. The MCP origin is separate. Cloudflare Access protects the admin origin; per-agent gateway tokens protect the MCP origin.
 
-## What is implemented
+## Flow
 
-1. Create an agent; its gateway token is shown once and only its SHA-256 hash is stored.
-2. Register a website's MCP URL and public OAuth client configuration.
-3. Connect the website with authorization code + PKCE. Website access and refresh tokens are encrypted before storage.
-4. Discover website tools and grant them individually to an agent.
-5. Serve the granted tools from `/mcp`. A tool call checks the grant again, obtains a website token, calls the website MCP server, and records an outcome.
-6. Revoke an agent or disconnect a website from the admin page.
+1. An app backend uses `@agent-connect/app-sdk` to publish `/.well-known/agent-connect.json` and verify tool requests. The app already provides OAuth and a remote MCP server.
+2. The user enters the app service URL in the control plane. The gateway fetches discovery details and starts OAuth authorization code + PKCE.
+3. The user creates an agent, copies its one-time gateway token into any MCP host, and grants specific tools.
+4. On a call, the gateway checks the grant, uses the app OAuth token, and sends a short ES256 signed assertion naming the agent and tool. The app SDK verifies the assertion and binds it to the app token.
 
-The gateway currently supports websites that provide a public OAuth client ID, authorization endpoint, token endpoint, and remote Streamable HTTP MCP server. The website must allow the configured callback URL and PKCE. OAuth discovery, dynamic client registration, and a website SDK are later work.
+The app SDK works for web apps and native apps with a hosted service. A native app without a reachable HTTPS backend cannot use this remote gateway directly.
 
 ## Setup
 
-1. Create a PlanetScale **Vitess/MySQL** database and apply [schema.sql](schema.sql) in its console or your migration process.
-2. Set `PUBLIC_BASE_URL` to the admin origin and `MCP_BASE_URL` to the separate MCP origin in `wrangler.jsonc`. Route both domains to this Worker.
-3. Protect the **admin origin** with a Cloudflare Access application. Set `ACCESS_ISSUER` to `https://<team>.cloudflareaccess.com` and `ACCESS_AUD` to that application's audience tag. Leave the MCP origin available to clients; the Worker checks its agent bearer token.
-4. Add `DATABASE_HOST`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`, and `ENCRYPTION_KEY` as Worker secrets. Generate the key as 32 random bytes encoded with base64url. Keep it stable: changing it makes stored website credentials unreadable.
-5. Register `${PUBLIC_BASE_URL}/oauth/callback` as the redirect URI with each website OAuth client. Use that website's OAuth client ID in the admin form. The MCP server must accept the resulting access token.
-6. Install dependencies and deploy when ready with `npm install` and `npm run deploy`.
+1. `npm install` at the monorepo root.
+2. Create a PlanetScale **Vitess/MySQL** database and apply `apps/gateway/schema.sql`.
+3. Set `PUBLIC_BASE_URL` (admin origin), `MCP_BASE_URL` (MCP origin), `ACCESS_ISSUER`, and `ACCESS_AUD` in `apps/gateway/wrangler.jsonc`. Route both origins to the gateway Worker.
+4. Protect the admin origin with Cloudflare Access. Leave the MCP origin available to clients; the Worker validates agent bearer tokens there.
+5. Configure Worker secrets: `DATABASE_HOST`, `DATABASE_USERNAME`, `DATABASE_PASSWORD`, `ENCRYPTION_KEY`, and `ASSERTION_PRIVATE_JWK`. `apps/gateway/.dev.vars.example` lists their expected shape. Keep the encryption key and assertion private key stable.
+6. Generate a P-256 key pair for assertions and store the **private JWK** as `ASSERTION_PRIVATE_JWK`. Its public key is served at `MCP_BASE_URL/.well-known/agent-connect/jwks.json`. Configure apps to trust that exact MCP origin.
+7. Register `PUBLIC_BASE_URL/oauth/callback` as a redirect URI for each app OAuth client. The app must accept `resource` set to its MCP URL.
+8. Run `npm run build:sdk` to prepare the app SDK for local consumers. Run `npm run deploy` when the Cloudflare domains and secrets are ready; deployment builds the frontend and deploys the Worker.
 
-For local development, copy `.dev.vars.example` to `.dev.vars`, fill in values, and run `npm run dev`. Local development also needs a valid Cloudflare Access assertion or a dedicated development authentication setup; the Worker does not bypass authentication.
+For an app without discovery, the control plane retains a manual OAuth and MCP setup form. The gateway still uses one-time tokens for agent hosts; automatic host OAuth is future work.
 
-## Host configuration
+## Current limits
 
-Set the MCP server URL to `MCP_BASE_URL/mcp` and use the newly created agent token as a bearer token. The dashboard displays both after agent creation. Tools appear as `<connection-id>__<website-tool-name>` to avoid collisions. The website OAuth token never goes to the host.
+- The app SDK does not implement an OAuth authorization server or an MCP server. It wraps an app's existing ones.
+- App-side `authorizeAgent` policy is optional. If omitted, the app trusts gateway grants plus its own OAuth consent. Native app teams can add their own agent approval UI and policy callback.
+- The custom discovery document and signed agent assertion are an Agent Connect integration contract, not an MCP standard. Standard MCP OAuth and protected resource metadata remain the app's responsibility.
+- The gateway currently proxies MCP tools only. Resources, prompts, subscriptions, and long running tasks are outside this first slice.
+- Tokens are encrypted at rest. Disconnect deletes local tokens and grants, but does not call the app's token revocation endpoint.
+- Public URL validation is basic; stronger destination controls are needed before accepting untrusted app registrations.
 
-## Security and current limits
-
-- Configure Cloudflare Access on the admin origin before exposing it. The Worker verifies the Access JWT's signature, issuer, and audience; admin APIs never return website credentials.
-- Website URLs must be HTTPS and cannot be IP literals or local hostnames. This is an initial URL check; stricter destination controls and DNS rebinding defenses are needed before accepting untrusted website registrations.
-- Downstream tokens are sent only to the configured website MCP server. Agent tokens are only for this gateway and cannot be used at website servers.
-- This version handles tool listing and calls. It does not proxy MCP resources, prompts, subscriptions, or long running tasks.
-- Tool lists are read live on each MCP request. This keeps grants current but adds latency and makes unavailable websites temporarily disappear from the list. Cache invalidation and rate limits are future work.
-- Disconnect removes local credentials and grants. It does not call the website's OAuth revocation endpoint. Revoke access at the website too if immediate upstream revocation is required.
-- The gateway bearer token is still entered once in the host's MCP configuration. Automating that host authorization step requires OAuth support at the gateway and host integration; website OAuth is automated here.
-
-## Status
-
-Implementation is a first slice. Per repository instruction, code execution, builds, and tests have not been run yet.
+Per repository instruction, code changes have **not** been built or tested yet.

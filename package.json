@@ -1,21 +1,13 @@
 {
-  "name": "agent-connect",
+  "name": "agent-connect-monorepo",
   "private": true,
   "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/client": "^2.0.0",
-    "@modelcontextprotocol/server": "^2.0.0",
-    "@planetscale/database": "^1.19.0",
-    "hono": "^4.9.0",
-    "jose": "^6.1.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.0",
-    "wrangler": "^4.0.0"
+    "dev:gateway": "npm run dev --workspace @agent-connect/gateway",
+    "dev:web": "npm run dev --workspace @agent-connect/web",
+    "build:web": "npm run build --workspace @agent-connect/web",
+    "build:sdk": "npm run build --workspace @agent-connect/app-sdk",
+    "deploy": "npm run build:web && npm run deploy --workspace @agent-connect/gateway"
   }
 }

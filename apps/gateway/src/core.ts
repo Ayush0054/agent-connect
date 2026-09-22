@@ -6,6 +6,8 @@ export type Env = {
   DATABASE_USERNAME: string
   DATABASE_PASSWORD: string
   ENCRYPTION_KEY: string
+  ASSERTION_PRIVATE_JWK: string
+  ASSETS: { fetch(request: Request): Promise<Response> }
   PUBLIC_BASE_URL: string
   MCP_BASE_URL: string
   ACCESS_ISSUER: string

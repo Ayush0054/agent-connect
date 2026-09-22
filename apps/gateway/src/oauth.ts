@@ -34,7 +34,7 @@ export async function exchangeToken(connection: Connection, env: Env, fields: UR
   })
   const body = await response.json().catch(() => null) as TokenResponse | null
   if (!response.ok || !body || typeof body.access_token !== 'string' || body.token_type?.toString().toLowerCase() !== 'bearer') {
-    throw new Error('Website OAuth token request failed')
+    throw new Error('App OAuth token request failed')
   }
   return body
 }
@@ -71,16 +71,16 @@ export async function oauthCallback(request: Request, owner: string, env: Env): 
   try {
     await saveTokens(connection, env, await exchangeToken(connection, env, fields))
   } catch {
-    return new Response('Website OAuth token request failed. Start the connection again.', { status: 502 })
+    return new Response('App OAuth token request failed. Start the connection again.', { status: 502 })
   }
   return Response.redirect(`${env.PUBLIC_BASE_URL}/?connected=${encodeURIComponent(connection.id)}`, 302)
 }
 
-export async function websiteToken(connection: Connection, env: Env): Promise<string> {
-  if (!connection.access_token_ciphertext) throw new Error('Website is not connected')
+export async function appToken(connection: Connection, env: Env): Promise<string> {
+  if (!connection.access_token_ciphertext) throw new Error('App is not connected')
   const expires = connection.token_expires_at ? Date.parse(connection.token_expires_at.replace(' ', 'T') + 'Z') : Infinity
   if (expires > Date.now() + 60_000) return decrypt(env, connection.access_token_ciphertext)
-  if (!connection.refresh_token_ciphertext) throw new Error('Website authorization expired')
+  if (!connection.refresh_token_ciphertext) throw new Error('App authorization expired')
   const refresh = await decrypt(env, connection.refresh_token_ciphertext)
   const fields = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refresh, client_id: connection.client_id, resource: connection.mcp_url })
   const result = await exchangeToken(connection, env, fields)
