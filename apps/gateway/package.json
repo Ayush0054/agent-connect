@@ -10,7 +10,7 @@
   "dependencies": {
     "@modelcontextprotocol/client": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",
-    "@planetscale/database": "^1.19.0",
+    "@neondatabase/serverless": "^1.1.0",
     "hono": "^4.9.0",
     "jose": "^6.1.0"
   },

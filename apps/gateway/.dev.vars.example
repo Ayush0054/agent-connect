@@ -1,5 +1,3 @@
-DATABASE_HOST=aws.connect.psdb.cloud
-DATABASE_USERNAME=your-planetscale-username
-DATABASE_PASSWORD=your-planetscale-password
+DATABASE_URL=postgresql://user:password@ep-example-123456.us-east-2.aws.neon.tech/agent_connect?sslmode=require
 ENCRYPTION_KEY=base64url-encoded-32-random-bytes
 ASSERTION_PRIVATE_JWK={"kty":"EC","crv":"P-256","x":"public-x","y":"public-y","d":"private-d","kid":"current"}

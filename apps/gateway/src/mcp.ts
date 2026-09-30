@@ -28,13 +28,13 @@ export async function discoverTools(connection: Connection, env: Env, agent?: Ag
 
 async function authorized(agent: Agent, connection: Connection, tool: string, env: Env): Promise<boolean> {
   const found = await first<Grant>(env,
-    'SELECT g.agent_id, g.connection_id, g.tool_name FROM grants g JOIN agents a ON a.id = g.agent_id JOIN connections c ON c.id = g.connection_id WHERE g.agent_id = ? AND g.connection_id = ? AND g.tool_name = ? AND a.revoked_at IS NULL AND a.owner_sub = c.owner_sub AND c.owner_sub = ?',
+    'SELECT g.agent_id, g.connection_id, g.tool_name FROM grants g JOIN agents a ON a.id = g.agent_id JOIN connections c ON c.id = g.connection_id WHERE g.agent_id = $1 AND g.connection_id = $2 AND g.tool_name = $3 AND a.revoked_at IS NULL AND a.owner_sub = c.owner_sub AND c.owner_sub = $4',
     [agent.id, connection.id, tool, agent.owner_sub])
   return Boolean(found)
 }
 
 async function recordAction(agent: Agent, connection: Connection, tool: string, outcome: string, env: Env) {
-  await execute(env, 'INSERT INTO action_log (id, agent_id, connection_id, tool_name, outcome) VALUES (?, ?, ?, ?, ?)', [
+  await execute(env, 'INSERT INTO action_log (id, agent_id, connection_id, tool_name, outcome) VALUES ($1, $2, $3, $4, $5)', [
     crypto.randomUUID(), agent.id, connection.id, tool, outcome,
   ])
 }
@@ -43,7 +43,7 @@ export async function serveMcp(request: Request, agent: Agent, env: Env): Promis
   const handler = createMcpHandler(async () => {
     const server = new McpServer({ name: 'agent-connect', version: '0.1.0' })
     const grants = await rows<Grant>(env,
-      'SELECT g.agent_id, g.connection_id, g.tool_name FROM grants g JOIN connections c ON c.id = g.connection_id WHERE g.agent_id = ? AND c.owner_sub = ?',
+      'SELECT g.agent_id, g.connection_id, g.tool_name FROM grants g JOIN connections c ON c.id = g.connection_id WHERE g.agent_id = $1 AND c.owner_sub = $2',
       [agent.id, agent.owner_sub])
     const byConnection = new Map<string, Set<string>>()
     for (const grant of grants) {
@@ -52,7 +52,7 @@ export async function serveMcp(request: Request, agent: Agent, env: Env): Promis
     }
 
     for (const [id, allowed] of byConnection) {
-      const connection = await first<Connection>(env, 'SELECT * FROM connections WHERE id = ? AND owner_sub = ?', [id, agent.owner_sub])
+      const connection = await first<Connection>(env, 'SELECT * FROM connections WHERE id = $1 AND owner_sub = $2', [id, agent.owner_sub])
       if (!connection?.access_token_ciphertext) continue
       let tools: Awaited<ReturnType<typeof discoverTools>>
       try { tools = await discoverTools(connection, env, agent) } catch { continue }

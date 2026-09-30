@@ -1,25 +1,24 @@
-# Local development database: MySQL plus a PlanetScale HTTP API simulator,
-# so the gateway's @planetscale/database driver runs unchanged.
+# Local development database: Postgres plus Neon's HTTP proxy, so the
+# gateway's @neondatabase/serverless driver runs unchanged.
 services:
-  mysql:
-    image: mysql:8.4
-    # The simulator holds one MySQL connection per driver session until it idles out.
-    command: ["--max-connections=2000"]
+  postgres:
+    image: postgres:17
     environment:
-      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
-      MYSQL_DATABASE: agent_connect
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: agent_connect
     volumes:
       - ./apps/gateway/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      test: ["CMD", "pg_isready", "-U", "postgres"]
       interval: 2s
       retries: 30
 
-  planetscale-http:
-    image: ghcr.io/mattrobenolt/ps-http-sim:latest
-    command: ["-listen-addr=0.0.0.0", "-listen-port=3900", "-mysql-addr=mysql", "-mysql-dbname=agent_connect", "-mysql-no-pass", "-mysql-idle-timeout=2s", "-log-level=warn"]
+  neon-proxy:
+    image: ghcr.io/timowilhelm/local-neon-http-proxy:main
+    environment:
+      PG_CONNECTION_STRING: postgres://postgres:postgres@postgres:5432/agent_connect
     ports:
-      - "127.0.0.1:3900:3900"
+      - "127.0.0.1:4444:4444"
     depends_on:
-      mysql:
+      postgres:
         condition: service_healthy

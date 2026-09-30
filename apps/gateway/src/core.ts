@@ -1,10 +1,9 @@
-import { connect } from '@planetscale/database'
+import { neon, neonConfig } from '@neondatabase/serverless'
 import { createRemoteJWKSet, jwtVerify } from 'jose'
 
 export type Env = {
-  DATABASE_HOST: string
-  DATABASE_USERNAME: string
-  DATABASE_PASSWORD: string
+  /** Neon Postgres connection string. */
+  DATABASE_URL: string
   ENCRYPTION_KEY: string
   ASSERTION_PRIVATE_JWK: string
   ASSETS: { fetch(request: Request): Promise<Response> }
@@ -12,8 +11,8 @@ export type Env = {
   MCP_BASE_URL: string
   ACCESS_ISSUER: string
   ACCESS_AUD: string
-  /** Local development only: an http:// PlanetScale HTTP API URL (e.g. ps-http-sim). */
-  DATABASE_URL?: string
+  /** Local development only: a loopback Neon HTTP proxy, e.g. http://127.0.0.1:4444/sql. */
+  DATABASE_HTTP_ENDPOINT?: string
   /** Local development only: owner used when PUBLIC_BASE_URL is a loopback http:// origin. */
   DEV_OWNER?: string
   /** Local development only: allow http:// app URLs on loopback hosts. */
@@ -34,18 +33,22 @@ export type Connection = {
   scope: string
   access_token_ciphertext: string | null
   refresh_token_ciphertext: string | null
-  token_expires_at: string | null
+  token_expires_at: Date | null
   connected_at: string | null
 }
 export type Grant = { agent_id: string; connection_id: string; tool_name: string }
 
 export function db(env: Env) {
-  if (env.DATABASE_URL) return connect({ url: env.DATABASE_URL })
-  return connect({ host: env.DATABASE_HOST, username: env.DATABASE_USERNAME, password: env.DATABASE_PASSWORD })
+  if (env.DATABASE_HTTP_ENDPOINT) {
+    const endpoint = new URL(env.DATABASE_HTTP_ENDPOINT)
+    if (endpoint.protocol !== 'http:' || !isLoopback(endpoint.hostname)) throw new Error('DATABASE_HTTP_ENDPOINT must be a loopback http:// URL')
+    neonConfig.fetchEndpoint = endpoint.toString()
+  }
+  return neon(env.DATABASE_URL, { fullResults: true })
 }
 
 export async function rows<T>(env: Env, sql: string, params: Array<string | number | null> = []): Promise<T[]> {
-  const result = await db(env).execute(sql, params)
+  const result = await db(env).query(sql, params)
   return result.rows as T[]
 }
 
@@ -54,11 +57,8 @@ export async function first<T>(env: Env, sql: string, params: Array<string | num
 }
 
 export async function execute(env: Env, sql: string, params: Array<string | number | null> = []) {
-  return db(env).execute(sql, params)
-}
-
-export function dateSql(date: Date): string {
-  return date.toISOString().slice(0, 23).replace('T', ' ')
+  const result = await db(env).query(sql, params)
+  return { rowCount: result.rowCount ?? 0 }
 }
 
 export function randomString(bytes = 32): string {
@@ -143,9 +143,9 @@ export async function agentFromBearer(request: Request, env: Env): Promise<Agent
   const header = request.headers.get('Authorization')
   if (!header?.startsWith('Bearer ac_')) return null
   const hash = await sha256(header.slice(7))
-  const agent = await first<Agent>(env, 'SELECT * FROM agents WHERE token_hash = ? AND revoked_at IS NULL', [hash])
+  const agent = await first<Agent>(env, 'SELECT * FROM agents WHERE token_hash = $1 AND revoked_at IS NULL', [hash])
   if (agent) return agent
   return first<Agent>(env,
-    "SELECT a.* FROM agent_tokens t JOIN agents a ON a.id = t.agent_id WHERE t.token_hash = ? AND t.kind = 'access' AND t.expires_at > ? AND a.revoked_at IS NULL",
-    [hash, dateSql(new Date())])
+    "SELECT a.* FROM agent_tokens t JOIN agents a ON a.id = t.agent_id WHERE t.token_hash = $1 AND t.kind = 'access' AND t.expires_at > $2 AND a.revoked_at IS NULL",
+    [hash, new Date().toISOString()])
 }

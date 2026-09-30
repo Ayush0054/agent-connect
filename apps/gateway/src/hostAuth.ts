@@ -5,7 +5,7 @@
 // The resulting tokens are bound to that agent; revoking the agent revokes them.
 import type { Context, Hono } from 'hono'
 import { html } from 'hono/html'
-import { dateSql, execute, first, pkceChallenge, randomString, rows, sha256, trustedUrl, type Agent, type AppEnv, type Connection, type Env } from './core'
+import { execute, first, pkceChallenge, randomString, rows, sha256, trustedUrl, type Agent, type AppEnv, type Connection, type Env } from './core'
 import { readSmallJson } from './discovery'
 import { discoverTools } from './mcp'
 
@@ -15,15 +15,15 @@ const CODE_TTL_SECONDS = 60
 const SCOPE = 'mcp'
 
 type Client = { client_id: string; client_name: string; redirect_uris: string[]; metadataDocument: boolean }
-type AuthCode = { client_id: string; agent_id: string; redirect_uri: string; code_challenge: string; expires_at: string }
-type AgentToken = { agent_id: string; client_id: string; expires_at: string }
+type AuthCode = { client_id: string; agent_id: string; redirect_uri: string; code_challenge: string; expires_at: Date }
+type AgentToken = { agent_id: string; client_id: string; expires_at: Date }
 
 export const issuer = (env: Env) => new URL(env.MCP_BASE_URL).origin
 export const mcpResource = (env: Env) => `${issuer(env)}/mcp`
 export const resourceMetadataUrl = (env: Env) => `${issuer(env)}/.well-known/oauth-protected-resource/mcp`
 
 const onMcpHost = (c: Context<AppEnv>) => new URL(c.req.url).host === new URL(c.env.MCP_BASE_URL).host
-const expired = (value: string) => Date.parse(value.replace(' ', 'T') + 'Z') <= Date.now()
+const expired = (value: Date) => value.getTime() <= Date.now()
 const cors = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type, Authorization, MCP-Protocol-Version' }
 
 function isLoopback(url: URL): boolean {
@@ -65,7 +65,7 @@ async function resolveClient(clientId: string, env: Env): Promise<Client | null>
       return { client_id: clientId, client_name: name, redirect_uris: doc.redirect_uris, metadataDocument: true }
     } catch { return null }
   }
-  const row = await first<{ client_id: string; client_name: string; redirect_uris: string }>(env, 'SELECT * FROM oauth_clients WHERE client_id = ?', [clientId])
+  const row = await first<{ client_id: string; client_name: string; redirect_uris: string }>(env, 'SELECT * FROM oauth_clients WHERE client_id = $1', [clientId])
   return row ? { ...row, redirect_uris: JSON.parse(row.redirect_uris) as string[], metadataDocument: false } : null
 }
 
@@ -73,9 +73,9 @@ async function issueTokens(env: Env, agentId: string, clientId: string) {
   const access = `ac_${randomString(32)}`
   const refresh = `acr_${randomString(32)}`
   const now = Date.now()
-  await execute(env, 'INSERT INTO agent_tokens (token_hash, agent_id, client_id, kind, expires_at) VALUES (?, ?, ?, ?, ?), (?, ?, ?, ?, ?)', [
-    await sha256(access), agentId, clientId, 'access', dateSql(new Date(now + ACCESS_TTL_SECONDS * 1000)),
-    await sha256(refresh), agentId, clientId, 'refresh', dateSql(new Date(now + REFRESH_TTL_SECONDS * 1000)),
+  await execute(env, 'INSERT INTO agent_tokens (token_hash, agent_id, client_id, kind, expires_at) VALUES ($1, $2, $3, $4, $5), ($6, $7, $8, $9, $10)', [
+    await sha256(access), agentId, clientId, 'access', new Date(now + ACCESS_TTL_SECONDS * 1000).toISOString(),
+    await sha256(refresh), agentId, clientId, 'refresh', new Date(now + REFRESH_TTL_SECONDS * 1000).toISOString(),
   ])
   return { access_token: access, token_type: 'Bearer', expires_in: ACCESS_TTL_SECONDS, refresh_token: refresh, scope: SCOPE }
 }
@@ -126,7 +126,7 @@ function page(title: string, body: ReturnType<typeof html>, status = 200) {
 const errorPage = (message: string) => page('Cannot connect', html`<div class="card"><h1>Cannot connect this host</h1><p>${message}</p></div>`, 400)
 
 async function connectedTools(owner: string, env: Env) {
-  const connections = await rows<Connection>(env, 'SELECT * FROM connections WHERE owner_sub = ? AND access_token_ciphertext IS NOT NULL ORDER BY created_at', [owner])
+  const connections = await rows<Connection>(env, 'SELECT * FROM connections WHERE owner_sub = $1 AND access_token_ciphertext IS NOT NULL ORDER BY created_at', [owner])
   return Promise.all(connections.map(async connection => {
     try { return { connection, tools: (await discoverTools(connection, env)).map(tool => ({ name: tool.name, description: tool.description ?? '' })) } }
     catch { return { connection, tools: null } }
@@ -178,7 +178,7 @@ export function registerHostAuth(app: Hono<AppEnv>) {
     }
     const name = typeof body?.client_name === 'string' && body.client_name.trim() ? body.client_name.trim().slice(0, 100) : 'MCP host'
     const clientId = `acc_${randomString(16)}`
-    await execute(c.env, 'INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES (?, ?, ?)', [clientId, name, JSON.stringify(redirects)])
+    await execute(c.env, 'INSERT INTO oauth_clients (client_id, client_name, redirect_uris) VALUES ($1, $2, $3)', [clientId, name, JSON.stringify(redirects)])
     return c.json({
       client_id: clientId,
       client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -198,7 +198,7 @@ export function registerHostAuth(app: Hono<AppEnv>) {
     const { client, redirectUri, state, codeChallenge } = checked.ok
     const owner = c.get('owner')
     const [agents, apps] = await Promise.all([
-      rows<Pick<Agent, 'id' | 'name'>>(c.env, 'SELECT id, name FROM agents WHERE owner_sub = ? AND revoked_at IS NULL ORDER BY created_at DESC', [owner]),
+      rows<Pick<Agent, 'id' | 'name'>>(c.env, 'SELECT id, name FROM agents WHERE owner_sub = $1 AND revoked_at IS NULL ORDER BY created_at DESC', [owner]),
       connectedTools(owner, c.env),
     ])
     const redirectHost = new URL(redirectUri).host || new URL(redirectUri).protocol
@@ -241,14 +241,14 @@ export function registerHostAuth(app: Hono<AppEnv>) {
     const owner = c.get('owner')
     let agentId: string
     if (single('agent_mode') === 'existing') {
-      const agent = await first<Agent>(c.env, 'SELECT * FROM agents WHERE id = ? AND owner_sub = ? AND revoked_at IS NULL', [single('agent_id') ?? '', owner])
+      const agent = await first<Agent>(c.env, 'SELECT * FROM agents WHERE id = $1 AND owner_sub = $2 AND revoked_at IS NULL', [single('agent_id') ?? '', owner])
       if (!agent) return errorPage('That agent no longer exists.')
       agentId = agent.id
     } else {
       const name = (single('agent_name') ?? '').trim() || client.client_name
       if (name.length > 100) return errorPage('Agent names are limited to 100 characters.')
       agentId = crypto.randomUUID()
-      await execute(c.env, 'INSERT INTO agents (id, owner_sub, name, token_hash) VALUES (?, ?, ?, NULL)', [agentId, owner, name])
+      await execute(c.env, 'INSERT INTO agents (id, owner_sub, name, token_hash) VALUES ($1, $2, $3, NULL)', [agentId, owner, name])
     }
 
     const requested = ([] as string[]).concat(form.tool ?? []).slice(0, 500)
@@ -260,17 +260,17 @@ export function registerHostAuth(app: Hono<AppEnv>) {
       byConnection.get(connectionId)!.add(toolName)
     }
     for (const [connectionId, toolNames] of byConnection) {
-      const connection = await first<Connection>(c.env, 'SELECT * FROM connections WHERE id = ? AND owner_sub = ? AND access_token_ciphertext IS NOT NULL', [connectionId, owner])
+      const connection = await first<Connection>(c.env, 'SELECT * FROM connections WHERE id = $1 AND owner_sub = $2 AND access_token_ciphertext IS NOT NULL', [connectionId, owner])
       if (!connection) continue
       const live = new Set((await discoverTools(connection, c.env).catch(() => [])).map(tool => tool.name))
       for (const toolName of toolNames) {
-        if (live.has(toolName)) await execute(c.env, 'INSERT IGNORE INTO grants (agent_id, connection_id, tool_name) VALUES (?, ?, ?)', [agentId, connectionId, toolName])
+        if (live.has(toolName)) await execute(c.env, 'INSERT INTO grants (agent_id, connection_id, tool_name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [agentId, connectionId, toolName])
       }
     }
 
     const code = randomString(32)
-    await execute(c.env, 'INSERT INTO host_auth_codes (code_hash, client_id, agent_id, redirect_uri, code_challenge, expires_at) VALUES (?, ?, ?, ?, ?, ?)', [
-      await sha256(code), client.client_id, agentId, redirectUri, codeChallenge, dateSql(new Date(Date.now() + CODE_TTL_SECONDS * 1000)),
+    await execute(c.env, 'INSERT INTO host_auth_codes (code_hash, client_id, agent_id, redirect_uri, code_challenge, expires_at) VALUES ($1, $2, $3, $4, $5, $6)', [
+      await sha256(code), client.client_id, agentId, redirectUri, codeChallenge, new Date(Date.now() + CODE_TTL_SECONDS * 1000).toISOString(),
     ])
     target.searchParams.set('code', code)
     return c.redirect(target.toString())
@@ -285,25 +285,25 @@ export function registerHostAuth(app: Hono<AppEnv>) {
 
     if (form.grant_type === 'authorization_code') {
       const hash = await sha256(form.code ?? '')
-      const record = await first<AuthCode>(c.env, 'SELECT * FROM host_auth_codes WHERE code_hash = ?', [hash])
+      const record = await first<AuthCode>(c.env, 'SELECT * FROM host_auth_codes WHERE code_hash = $1', [hash])
       if (!record) return fail('invalid_grant')
-      const consumed = await execute(c.env, 'DELETE FROM host_auth_codes WHERE code_hash = ?', [hash])
-      if (!consumed.rowsAffected || expired(record.expires_at)) return fail('invalid_grant')
+      const consumed = await execute(c.env, 'DELETE FROM host_auth_codes WHERE code_hash = $1', [hash])
+      if (!consumed.rowCount || expired(record.expires_at)) return fail('invalid_grant')
       if (record.client_id !== clientId || record.redirect_uri !== form.redirect_uri) return fail('invalid_grant')
       if (await pkceChallenge(form.code_verifier ?? '') !== record.code_challenge) return fail('invalid_grant')
-      const agent = await first<Agent>(c.env, 'SELECT * FROM agents WHERE id = ? AND revoked_at IS NULL', [record.agent_id])
+      const agent = await first<Agent>(c.env, 'SELECT * FROM agents WHERE id = $1 AND revoked_at IS NULL', [record.agent_id])
       if (!agent) return fail('invalid_grant')
       return c.json(await issueTokens(c.env, agent.id, clientId), 200, cors)
     }
 
     if (form.grant_type === 'refresh_token') {
       const hash = await sha256(form.refresh_token ?? '')
-      const record = await first<AgentToken>(c.env, "SELECT agent_id, client_id, expires_at FROM agent_tokens WHERE token_hash = ? AND kind = 'refresh'", [hash])
+      const record = await first<AgentToken>(c.env, "SELECT agent_id, client_id, expires_at FROM agent_tokens WHERE token_hash = $1 AND kind = 'refresh'", [hash])
       if (!record || record.client_id !== clientId) return fail('invalid_grant')
       // Rotate: each refresh token works once.
-      const consumed = await execute(c.env, 'DELETE FROM agent_tokens WHERE token_hash = ?', [hash])
-      if (!consumed.rowsAffected || expired(record.expires_at)) return fail('invalid_grant')
-      const agent = await first<Agent>(c.env, 'SELECT * FROM agents WHERE id = ? AND revoked_at IS NULL', [record.agent_id])
+      const consumed = await execute(c.env, 'DELETE FROM agent_tokens WHERE token_hash = $1', [hash])
+      if (!consumed.rowCount || expired(record.expires_at)) return fail('invalid_grant')
+      const agent = await first<Agent>(c.env, 'SELECT * FROM agents WHERE id = $1 AND revoked_at IS NULL', [record.agent_id])
       if (!agent) return fail('invalid_grant')
       return c.json(await issueTokens(c.env, agent.id, clientId), 200, cors)
     }
