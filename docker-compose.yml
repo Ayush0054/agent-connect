@@ -1,0 +1,23 @@
+# Local development database: MySQL plus a PlanetScale HTTP API simulator,
+# so the gateway's @planetscale/database driver runs unchanged.
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      MYSQL_DATABASE: agent_connect
+    volumes:
+      - ./apps/gateway/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 2s
+      retries: 30
+
+  planetscale-http:
+    image: ghcr.io/mattrobenolt/ps-http-sim:latest
+    command: ["-listen-addr=0.0.0.0", "-listen-port=3900", "-mysql-addr=mysql", "-mysql-dbname=agent_connect", "-mysql-no-pass", "-log-level=warn"]
+    ports:
+      - "127.0.0.1:3900:3900"
+    depends_on:
+      mysql:
+        condition: service_healthy

@@ -12,6 +12,12 @@ export type Env = {
   MCP_BASE_URL: string
   ACCESS_ISSUER: string
   ACCESS_AUD: string
+  /** Local development only: an http:// PlanetScale HTTP API URL (e.g. ps-http-sim). */
+  DATABASE_URL?: string
+  /** Local development only: owner used when PUBLIC_BASE_URL is a loopback http:// origin. */
+  DEV_OWNER?: string
+  /** Local development only: allow http:// app URLs on loopback hosts. */
+  ALLOW_LOOPBACK_APPS?: string
 }
 
 export type Agent = { id: string; owner_sub: string; name: string; token_hash: string; revoked_at: string | null; created_at: string }
@@ -32,6 +38,7 @@ export type Connection = {
 export type Grant = { agent_id: string; connection_id: string; tool_name: string }
 
 export function db(env: Env) {
+  if (env.DATABASE_URL) return connect({ url: env.DATABASE_URL })
   return connect({ host: env.DATABASE_HOST, username: env.DATABASE_USERNAME, password: env.DATABASE_PASSWORD })
 }
 
@@ -58,7 +65,7 @@ function base64url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-function fromBase64url(value: string): Uint8Array {
+function fromBase64url(value: string): Uint8Array<ArrayBuffer> {
   const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/'))
   return Uint8Array.from(binary, char => char.charCodeAt(0))
 }
@@ -94,7 +101,13 @@ export async function decrypt(env: Env, value: string): Promise<string> {
   return new TextDecoder().decode(clear)
 }
 
+function isLoopback(host: string): boolean {
+  return host === 'localhost' || host === '127.0.0.1' || host === '[::1]'
+}
+
 export async function accessOwner(request: Request, env: Env): Promise<string | null> {
+  const base = new URL(env.PUBLIC_BASE_URL)
+  if (env.DEV_OWNER && base.protocol === 'http:' && isLoopback(base.hostname)) return env.DEV_OWNER
   const assertion = request.headers.get('Cf-Access-Jwt-Assertion')
   if (!assertion) return null
   const issuer = env.ACCESS_ISSUER.replace(/\/$/, '')
@@ -107,8 +120,11 @@ export async function accessOwner(request: Request, env: Env): Promise<string | 
   }
 }
 
-export function trustedUrl(value: string): string {
+export function trustedUrl(value: string, env: Env): string {
   const url = new URL(value)
+  if (env.ALLOW_LOOPBACK_APPS === 'true' && url.protocol === 'http:' && isLoopback(url.hostname) && !url.username && !url.password && !url.hash) {
+    return url.toString()
+  }
   if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new Error('A public HTTPS URL is required')
   const host = url.hostname.toLowerCase().replace(/\.$/, '')
   if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local') || host.endsWith('.internal') || /^[\d.]+$/.test(host) || host.includes(':')) {

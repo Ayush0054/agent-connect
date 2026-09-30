@@ -20,6 +20,8 @@ export type AgentConnectIntegrationConfig = {
 export type AgentContext = {
   appUserId: string
   agentId: string
+  /** Display name the user gave this agent in Agent Connect. */
+  agentName?: string
   gatewayOwnerId: string
   connectionId: string
   toolName: string
@@ -32,9 +34,13 @@ export class AgentConnectAuthError extends Error {
   }
 }
 
+const loopbackHosts = new Set(['localhost', '127.0.0.1', '[::1]'])
+
+/** HTTPS, or plain HTTP on a loopback host for local development. */
 function httpsUrl(value: string): string {
   const url = new URL(value)
-  if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new Error('Expected a public HTTPS URL')
+  const localHttp = url.protocol === 'http:' && loopbackHosts.has(url.hostname)
+  if ((url.protocol !== 'https:' && !localHttp) || url.username || url.password || url.hash) throw new Error('Expected an HTTPS URL')
   return url.toString()
 }
 
@@ -112,6 +118,7 @@ export function createAgentConnectIntegration(config: AgentConnectIntegrationCon
       const context: AgentContext = {
         appUserId: appUser.userId,
         agentId: payload.sub,
+        agentName: typeof payload.agent_name === 'string' ? payload.agent_name : undefined,
         gatewayOwnerId: payload.owner_sub,
         connectionId: payload.connection_id,
         toolName,

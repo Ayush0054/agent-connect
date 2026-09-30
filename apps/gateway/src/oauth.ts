@@ -13,7 +13,7 @@ export async function startOAuth(connection: Connection, env: Env): Promise<Resp
   await execute(env, 'INSERT INTO oauth_states (state_hash, owner_sub, connection_id, verifier_ciphertext, expires_at) VALUES (?, ?, ?, ?, ?)', [
     await sha256(state), connection.owner_sub, connection.id, await encrypt(env, verifier), dateSql(new Date(Date.now() + 10 * 60_000)),
   ])
-  const authorize = new URL(trustedUrl(connection.authorization_url))
+  const authorize = new URL(trustedUrl(connection.authorization_url, env))
   authorize.searchParams.set('response_type', 'code')
   authorize.searchParams.set('client_id', connection.client_id)
   authorize.searchParams.set('redirect_uri', `${env.PUBLIC_BASE_URL}/oauth/callback`)
@@ -26,11 +26,11 @@ export async function startOAuth(connection: Connection, env: Env): Promise<Resp
 }
 
 export async function exchangeToken(connection: Connection, env: Env, fields: URLSearchParams): Promise<TokenResponse> {
-  const response = await fetch(trustedUrl(connection.token_url), {
+  const response = await fetch(trustedUrl(connection.token_url, env), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: fields,
-    redirect: 'error',
+    redirect: 'manual',
   })
   const body = await response.json().catch(() => null) as TokenResponse | null
   if (!response.ok || !body || typeof body.access_token !== 'string' || body.token_type?.toString().toLowerCase() !== 'bearer') {

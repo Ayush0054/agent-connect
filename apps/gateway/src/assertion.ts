@@ -33,6 +33,7 @@ export async function agentAssertion(agent: Agent, connection: Connection, toolN
   return new SignJWT({
     connection_id: connection.id,
     owner_sub: agent.owner_sub,
+    agent_name: agent.name,
     tool_name: toolName,
     ath: await tokenHash(appAccessToken),
   })

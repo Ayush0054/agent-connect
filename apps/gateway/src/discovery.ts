@@ -1,4 +1,4 @@
-import { trustedUrl } from './core'
+import { trustedUrl, type Env } from './core'
 
 export type AppManifest = {
   version: 1
@@ -28,10 +28,10 @@ async function readSmallJson(response: Response): Promise<unknown> {
   return JSON.parse(new TextDecoder().decode(bytes))
 }
 
-export async function discoverApp(appUrl: string): Promise<AppManifest> {
-  const origin = new URL(trustedUrl(appUrl)).origin
+export async function discoverApp(appUrl: string, env: Env): Promise<AppManifest> {
+  const origin = new URL(trustedUrl(appUrl, env)).origin
   const endpoint = new URL('/.well-known/agent-connect.json', origin)
-  const response = await fetch(endpoint, { headers: { Accept: 'application/json' }, redirect: 'error' })
+  const response = await fetch(endpoint, { headers: { Accept: 'application/json' }, redirect: 'manual' })
   if (!response.ok) throw new Error('App discovery failed')
   const data = await readSmallJson(response) as Partial<AppManifest>
   if (data.version !== 1 || typeof data.name !== 'string' || !data.name.trim() || data.name.length > 100 ||
@@ -44,10 +44,10 @@ export async function discoverApp(appUrl: string): Promise<AppManifest> {
   return {
     version: 1,
     name: data.name.trim(),
-    mcp_url: trustedUrl(data.mcp_url),
+    mcp_url: trustedUrl(data.mcp_url, env),
     oauth: {
-      authorization_url: trustedUrl(data.oauth.authorization_url),
-      token_url: trustedUrl(data.oauth.token_url),
+      authorization_url: trustedUrl(data.oauth.authorization_url, env),
+      token_url: trustedUrl(data.oauth.token_url, env),
       client_id: data.oauth.client_id,
       scope: data.oauth.scope ?? '',
     },

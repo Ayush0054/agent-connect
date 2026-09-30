@@ -16,6 +16,7 @@ Agent host ── gateway token ──▶ Hono gateway ── app OAuth token + 
 | `apps/gateway` | Hono Cloudflare Worker, OAuth connection flow, PlanetScale storage, MCP router, agent assertions |
 | `apps/web` | React + Vite control plane for connections, agents, grants, and activity |
 | `packages/server-sdk` | Framework-neutral TypeScript SDK for any app backend to publish discovery and verify agent requests |
+| `examples/notes-app` | Local example app with its own OAuth server and MCP server, using the server SDK |
 
 The frontend is served as static assets by the gateway Worker on the admin origin. The MCP origin is separate. Cloudflare Access protects the admin origin; per-agent gateway tokens protect the MCP origin.
 
@@ -27,6 +28,22 @@ The frontend is served as static assets by the gateway Worker on the admin origi
 4. On a call, the gateway checks the grant, uses the app OAuth token, and sends a short ES256 signed assertion naming the agent and tool. The server SDK verifies the assertion and binds it to the app token.
 
 The server SDK works for web apps and native apps with a hosted service. A native app without a reachable HTTPS backend cannot use this remote gateway directly.
+
+## Local development
+
+Requires Node 22+ and Docker.
+
+```bash
+npm install
+npm run setup:dev      # writes apps/gateway/.dev.vars with fresh local keys
+npm run db:up          # MySQL + PlanetScale HTTP simulator on 127.0.0.1:3900
+npm run build:web && npm run build:sdk
+npm run dev:gateway    # admin on http://localhost:8787, MCP on http://127.0.0.1:8787
+npm run dev:notes      # example app on http://localhost:4000
+node scripts/e2e.mjs   # connect app, two agents, grants, tool calls, revoke
+```
+
+Local mode swaps Cloudflare Access for a fixed `DEV_OWNER` and allows `http://` app URLs on loopback hosts. Both only apply when `.dev.vars` sets them and `PUBLIC_BASE_URL` is a loopback `http://` origin.
 
 ## Setup
 
@@ -49,5 +66,3 @@ For an app without discovery, the control plane retains a manual OAuth and MCP s
 - The gateway currently proxies MCP tools only. Resources, prompts, subscriptions, and long running tasks are outside this first slice.
 - Tokens are encrypted at rest. Disconnect deletes local tokens and grants, but does not call the app's token revocation endpoint.
 - Public URL validation is basic; stronger destination controls are needed before accepting untrusted app registrations.
-
-Per repository instruction, code changes have **not** been built or tested yet.

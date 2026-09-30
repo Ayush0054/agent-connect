@@ -1,5 +1,5 @@
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
-import { createMcpHandler, fromJsonSchema, McpServer } from '@modelcontextprotocol/server'
+import { createMcpHandler, fromJsonSchema, McpServer, type JsonSchemaType } from '@modelcontextprotocol/server'
 import { execute, first, rows, trustedUrl, type Agent, type Connection, type Env, type Grant } from './core'
 import { appToken } from './oauth'
 import { agentAssertion } from './assertion'
@@ -9,8 +9,8 @@ export async function remoteClient(connection: Connection, env: Env, agent?: Age
   const headers: Record<string, string> = { Authorization: `Bearer ${token}` }
   if (agent && toolName) headers['Agent-Connect-Assertion'] = await agentAssertion(agent, connection, toolName, token, env)
   const client = new Client({ name: 'agent-connect', version: '0.1.0' }, { versionNegotiation: { mode: 'auto' } })
-  const transport = new StreamableHTTPClientTransport(new URL(trustedUrl(connection.mcp_url)), {
-    requestInit: { headers, redirect: 'error' },
+  const transport = new StreamableHTTPClientTransport(new URL(trustedUrl(connection.mcp_url, env)), {
+    requestInit: { headers, redirect: 'manual' },
   })
   await client.connect(transport)
   return client
@@ -61,7 +61,7 @@ export async function serveMcp(request: Request, agent: Agent, env: Env): Promis
         const name = `${connection.id}__${tool.name}`
         server.registerTool(name, {
           description: `${connection.name}: ${tool.description}`,
-          inputSchema: fromJsonSchema<Record<string, unknown>>(tool.inputSchema),
+          inputSchema: fromJsonSchema<Record<string, unknown>>(tool.inputSchema as JsonSchemaType),
         }, async args => {
           if (!await authorized(agent, connection, tool.name, env)) {
             return { isError: true, content: [{ type: 'text', text: 'Tool grant was revoked' }] }

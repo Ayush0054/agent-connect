@@ -98,7 +98,7 @@ app.post('/api/connections', async c => {
   const appUrl = typeof body.app_url === 'string' ? body.app_url : body.website_url
   if (typeof appUrl === 'string') {
     try {
-      const manifest = await discoverApp(appUrl)
+      const manifest = await discoverApp(appUrl, c.env)
       details = {
         name: manifest.name,
         mcp_url: manifest.mcp_url,
@@ -107,7 +107,10 @@ app.post('/api/connections', async c => {
         client_id: manifest.oauth.client_id,
         scope: manifest.oauth.scope ?? '',
       }
-    } catch { return c.json({ error: 'Could not discover this app. Check its Agent Connect manifest.' }, 422) }
+    } catch (error) {
+      console.warn('App discovery failed:', error instanceof Error ? error.message : error)
+      return c.json({ error: 'Could not discover this app. Check its Agent Connect manifest.' }, 422)
+    }
   }
   const name = typeof details.name === 'string' ? details.name.trim() : ''
   const clientId = typeof details.client_id === 'string' ? details.client_id.trim() : ''
@@ -115,9 +118,9 @@ app.post('/api/connections', async c => {
   if (!name || name.length > 100 || !clientId || clientId.length > 2048 || scope.length > 2048) return c.json({ error: 'Invalid name, client ID, or scope' }, 400)
   let mcpUrl: string, authorizationUrl: string, tokenUrl: string
   try {
-    mcpUrl = trustedUrl(String(details.mcp_url ?? ''))
-    authorizationUrl = trustedUrl(String(details.authorization_url ?? ''))
-    tokenUrl = trustedUrl(String(details.token_url ?? ''))
+    mcpUrl = trustedUrl(String(details.mcp_url ?? ''), c.env)
+    authorizationUrl = trustedUrl(String(details.authorization_url ?? ''), c.env)
+    tokenUrl = trustedUrl(String(details.token_url ?? ''), c.env)
   } catch { return c.json({ error: 'Endpoints must be public HTTPS URLs' }, 400) }
   const id = crypto.randomUUID()
   await execute(c.env,
