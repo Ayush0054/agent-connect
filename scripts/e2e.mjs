@@ -111,5 +111,73 @@ check('other agent still works after the revoke', !stillWorks.isError)
 const { actions } = await api('/api/overview')
 check('tool calls are in the activity log', actions.some(a => a.agent_id === research.id && a.tool_name === 'create_note' && a.outcome === 'success'))
 
+// 8. Host OAuth: a host that only knows the MCP URL, using the MCP SDK's own OAuth flow.
+class MemoryOAuthProvider {
+  store = {}
+  authorizationUrl = null
+  get redirectUrl() { return 'http://127.0.0.1:33418/callback' }
+  get clientMetadata() {
+    return { client_name: 'E2E Host', redirect_uris: [this.redirectUrl], grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], token_endpoint_auth_method: 'none' }
+  }
+  clientInformation() { return this.store.client }
+  saveClientInformation(info) { this.store.client = info }
+  tokens() { return this.store.tokens }
+  saveTokens(tokens) { this.store.tokens = tokens }
+  redirectToAuthorization(url) { this.authorizationUrl = url }
+  saveCodeVerifier(verifier) { this.store.verifier = verifier }
+  codeVerifier() { return this.store.verifier }
+  saveDiscoveryState(state) { this.store.discovery = state }
+  discoveryState() { return this.store.discovery }
+}
+
+const provider = new MemoryOAuthProvider()
+const hostTransport = () => new StreamableHTTPClientTransport(new URL('/mcp', mcpBase), { authProvider: provider })
+const firstTry = new Client({ name: 'e2e-oauth-host', version: '0.0.0' })
+const firstTransport = hostTransport()
+const unauthorized = await firstTry.connect(firstTransport).then(() => false, () => true)
+check('host without a token is sent to authorize', unauthorized && provider.authorizationUrl !== null)
+check('host registered itself (DCR)', typeof provider.store.client?.client_id === 'string', provider.store.client?.client_id)
+
+const authorizeUrl = new URL(provider.authorizationUrl)
+check('authorize page is on the admin origin', authorizeUrl.origin === new URL(admin).origin)
+const consentPage = await fetch(authorizeUrl)
+check('consent page names the host', consentPage.ok && (await consentPage.text()).includes('Connect E2E Host'))
+
+const approval = new URLSearchParams({ agent_mode: 'new', agent_name: 'Claude Code (OAuth)', decision: 'allow', tool: `${connectionId}::list_notes` })
+for (const key of ['client_id', 'redirect_uri', 'state', 'code_challenge', 'code_challenge_method', 'response_type']) approval.set(key, authorizeUrl.searchParams.get(key) ?? '')
+const crossSite = await fetch(new URL('/oauth/authorize', admin), { method: 'POST', body: approval, headers: { Origin: 'https://evil.example' }, redirect: 'manual' })
+check('consent POST from another origin is rejected', crossSite.status === 403)
+const hostCallback = await redirectTarget(new URL('/oauth/authorize', admin), { method: 'POST', body: approval, headers: { Origin: new URL(admin).origin } })
+check('consent redirects to the host callback with a code', hostCallback.origin === 'http://127.0.0.1:33418' && hostCallback.searchParams.has('code'))
+check('callback carries the issuer (RFC 9207)', hostCallback.searchParams.get('iss') === new URL(mcpBase).origin)
+
+await firstTransport.finishAuth(hostCallback.searchParams)
+check('host received tokens', typeof provider.store.tokens?.access_token === 'string')
+const hostClient = new Client({ name: 'e2e-oauth-host', version: '0.0.0' })
+await hostClient.connect(hostTransport())
+const hostTools = (await hostClient.listTools()).tools.map(tool => tool.name)
+check('OAuth host sees exactly the tools picked on the consent page', hostTools.length === 1 && hostTools[0] === prefixed('list_notes'), hostTools.join(', '))
+const hostCall = await hostClient.callTool({ name: prefixed('list_notes'), arguments: {} })
+check('OAuth host calls an app tool', !hostCall.isError)
+await hostClient.close()
+
+const appState = await (await fetch(new URL('/debug/state', appUrl))).json()
+check('app sees the OAuth-connected agent by name', appState.agents.some(agent => agent.name === 'Claude Code (OAuth)'))
+
+const oldRefresh = provider.store.tokens.refresh_token
+const refreshBody = refresh => new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refresh, client_id: provider.store.client.client_id })
+const refreshed = await fetch(new URL('/oauth/token', mcpBase), { method: 'POST', body: refreshBody(oldRefresh) })
+const newTokens = await refreshed.json()
+check('refresh token issues a new access token', refreshed.ok && newTokens.access_token && newTokens.access_token !== provider.store.tokens.access_token)
+const replay = await fetch(new URL('/oauth/token', mcpBase), { method: 'POST', body: refreshBody(oldRefresh) })
+check('used refresh token cannot be replayed', replay.status === 400)
+
+const hostAgent = (await api('/api/overview')).agents.find(agent => agent.name === 'Claude Code (OAuth)')
+await api(`/api/agents/${hostAgent.id}/revoke`, { method: 'POST', body: {} })
+const afterRevoke = await toolsFor(newTokens.access_token).then(() => 'connected', error => String(error.message))
+check('revoking the agent invalidates its OAuth tokens', afterRevoke !== 'connected')
+const refreshAfterRevoke = await fetch(new URL('/oauth/token', mcpBase), { method: 'POST', body: refreshBody(newTokens.refresh_token) })
+check('revoked agent cannot refresh', refreshAfterRevoke.status === 400)
+
 console.log(failures ? `\n${failures} check(s) failed` : '\nAll checks passed')
 process.exit(failures ? 1 : 0)

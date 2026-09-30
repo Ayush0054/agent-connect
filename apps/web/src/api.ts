@@ -3,7 +3,7 @@ export type Connection = { id: string; name: string; mcp_url: string; connected_
 export type Grant = { agent_id: string; connection_id: string; tool_name: string }
 export type Action = { id: string; agent_id: string; connection_id: string; tool_name: string; outcome: string; created_at: string }
 export type Tool = { name: string; description?: string; inputSchema: Record<string, unknown> }
-export type Overview = { agents: Agent[]; connections: Connection[]; grants: Grant[]; actions: Action[] }
+export type Overview = { agents: Agent[]; connections: Connection[]; grants: Grant[]; actions: Action[]; mcp_url: string }
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)

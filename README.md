@@ -24,7 +24,7 @@ The frontend is served as static assets by the gateway Worker on the admin origi
 
 1. An app backend uses `@agent-connect/server-sdk` to publish `/.well-known/agent-connect.json` and verify tool requests. The app already provides OAuth and a remote MCP server.
 2. The user enters the app service URL in the control plane. The gateway fetches discovery details and starts OAuth authorization code + PKCE.
-3. The user creates an agent, copies its one-time gateway token into any MCP host, and grants specific tools.
+3. The user adds the gateway's MCP URL to any MCP host. The host follows standard MCP OAuth (protected resource metadata, dynamic client registration or a client ID metadata document, PKCE) and opens a consent page where the user names the agent and picks its tools. Hosts without OAuth can still use a static per-agent token.
 4. On a call, the gateway checks the grant, uses the app OAuth token, and sends a short ES256 signed assertion naming the agent and tool. The server SDK verifies the assertion and binds it to the app token.
 
 The server SDK works for web apps and native apps with a hosted service. A native app without a reachable HTTPS backend cannot use this remote gateway directly.
@@ -56,7 +56,7 @@ Local mode swaps Cloudflare Access for a fixed `DEV_OWNER` and allows `http://` 
 7. Register `PUBLIC_BASE_URL/oauth/callback` as a redirect URI for each app OAuth client. The app must accept `resource` set to its MCP URL.
 8. Run `npm run build:sdk` to prepare the server SDK for local consumers. Run `npm run deploy` when the Cloudflare domains and secrets are ready; deployment builds the frontend and deploys the Worker.
 
-For an app without discovery, the control plane retains a manual OAuth and MCP setup form. The gateway still uses one-time tokens for agent hosts; automatic host OAuth is future work.
+For an app without discovery, the control plane retains a manual OAuth and MCP setup form.
 
 ## Current limits
 

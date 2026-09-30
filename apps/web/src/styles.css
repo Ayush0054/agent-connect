@@ -171,3 +171,5 @@ label { display: grid; gap: .4rem; font-size: .75rem; font-weight: 650; color: #
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.mcp-url { flex: 1; min-width: 0; overflow-wrap: anywhere; padding: 10px 12px; border: 1px solid var(--line, #dfe3dc); border-radius: 8px; font-size: 13px; }

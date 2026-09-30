@@ -3,6 +3,8 @@
 services:
   mysql:
     image: mysql:8.4
+    # The simulator holds one MySQL connection per driver session until it idles out.
+    command: ["--max-connections=2000"]
     environment:
       MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
       MYSQL_DATABASE: agent_connect
@@ -15,7 +17,7 @@ services:
 
   planetscale-http:
     image: ghcr.io/mattrobenolt/ps-http-sim:latest
-    command: ["-listen-addr=0.0.0.0", "-listen-port=3900", "-mysql-addr=mysql", "-mysql-dbname=agent_connect", "-mysql-no-pass", "-log-level=warn"]
+    command: ["-listen-addr=0.0.0.0", "-listen-port=3900", "-mysql-addr=mysql", "-mysql-dbname=agent_connect", "-mysql-no-pass", "-mysql-idle-timeout=2s", "-log-level=warn"]
     ports:
       - "127.0.0.1:3900:3900"
     depends_on:

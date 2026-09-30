@@ -138,7 +138,7 @@ export function App() {
       {!loading && overview && <>
         {view === 'overview' && <OverviewPage data={overview} navigate={setView} />}
         {view === 'connections' && <ConnectionsPage connections={overview.connections} pending={pending} onConnect={connectApp} onDisconnect={disconnect} />}
-        {view === 'agents' && <AgentsPage agents={overview.agents} pending={pending} onCreate={createAgent} onRevoke={revokeAgent} />}
+        {view === 'agents' && <AgentsPage agents={overview.agents} mcpUrl={overview.mcp_url} pending={pending} onCreate={createAgent} onRevoke={revokeAgent} />}
         {view === 'permissions' && <PermissionsPage data={overview} tools={tools} toolsLoading={toolsLoading} pending={pending}
           agentId={selectedAgent} connectionId={selectedConnection} onAgentChange={setSelectedAgent}
           onConnectionChange={setSelectedConnection} onToggle={toggleGrant} navigate={setView} />}
@@ -161,7 +161,7 @@ function TokenDialog({ issued, onClose }: { issued: IssuedToken | null; onClose:
     {issued && <div className="dialog-inner">
       <div className="dialog-kicker">NEW AGENT CREDENTIAL</div>
       <h2 id="token-title">Connect {issued.name}</h2>
-      <p>Copy these values into your MCP host. The token is shown only once.</p>
+      <p>For hosts without OAuth support. Copy these values into the host; the token is shown only once.</p>
       <div className="credential"><span>MCP SERVER URL</span><code>{issued.mcp_url}</code></div>
       <div className="credential"><span>BEARER TOKEN</span><code>{issued.token}</code></div>
       <div className="dialog-actions"><button type="button" className="button secondary" onClick={onClose}>Done</button>

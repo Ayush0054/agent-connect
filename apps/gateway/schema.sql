@@ -2,7 +2,8 @@ CREATE TABLE agents (
   id VARCHAR(64) PRIMARY KEY,
   owner_sub VARCHAR(255) NOT NULL,
   name VARCHAR(255) NOT NULL,
-  token_hash CHAR(64) NOT NULL UNIQUE,
+  -- Static token for manually configured hosts; NULL for agents created through host OAuth.
+  token_hash CHAR(64) NULL UNIQUE,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   revoked_at DATETIME(3) NULL,
   INDEX agents_owner (owner_sub)
@@ -52,4 +53,32 @@ CREATE TABLE action_log (
   error_code VARCHAR(64) NULL,
   created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
   INDEX action_owner (agent_id, created_at)
+);
+
+-- Host OAuth: MCP hosts (Claude Code, Codex, ...) authorize against the gateway itself.
+CREATE TABLE oauth_clients (
+  client_id VARCHAR(64) PRIMARY KEY,
+  client_name VARCHAR(255) NOT NULL,
+  redirect_uris TEXT NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+);
+
+CREATE TABLE host_auth_codes (
+  code_hash CHAR(64) PRIMARY KEY,
+  client_id VARCHAR(2048) NOT NULL,
+  agent_id VARCHAR(64) NOT NULL,
+  redirect_uri VARCHAR(2048) NOT NULL,
+  code_challenge VARCHAR(128) NOT NULL,
+  expires_at DATETIME(3) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+);
+
+CREATE TABLE agent_tokens (
+  token_hash CHAR(64) PRIMARY KEY,
+  agent_id VARCHAR(64) NOT NULL,
+  client_id VARCHAR(2048) NOT NULL,
+  kind VARCHAR(16) NOT NULL,
+  expires_at DATETIME(3) NOT NULL,
+  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  INDEX agent_tokens_agent (agent_id)
 );

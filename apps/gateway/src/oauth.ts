@@ -1,11 +1,7 @@
-import { decrypt, encrypt, execute, first, pkceChallenge, randomString, sha256, trustedUrl, type Connection, type Env } from './core'
+import { dateSql, decrypt, encrypt, execute, first, pkceChallenge, randomString, sha256, trustedUrl, type Connection, type Env } from './core'
 
 type OAuthState = { owner_sub: string; connection_id: string; verifier_ciphertext: string; expires_at: string }
 type TokenResponse = { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown; token_type?: unknown; error?: unknown }
-
-function dateSql(date: Date): string {
-  return date.toISOString().slice(0, 23).replace('T', ' ')
-}
 
 export async function startOAuth(connection: Connection, env: Env): Promise<Response> {
   const state = randomString()

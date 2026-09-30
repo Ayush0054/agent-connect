@@ -1,4 +1,4 @@
-import type { FormEvent, ReactNode } from 'react'
+import { useState, type FormEvent, type ReactNode } from 'react'
 import type { Agent, Connection, Overview, Tool } from './api'
 
 type View = 'overview' | 'connections' | 'agents' | 'permissions' | 'activity'
@@ -81,9 +81,10 @@ export function ConnectionsPage({ connections, pending, onConnect, onDisconnect 
   </div>
 }
 
-export function AgentsPage({ agents, pending, onCreate, onRevoke }: {
-  agents: Agent[]; pending: boolean; onCreate: (name: string) => Promise<void>; onRevoke: (agent: Agent) => void
+export function AgentsPage({ agents, mcpUrl, pending, onCreate, onRevoke }: {
+  agents: Agent[]; mcpUrl: string; pending: boolean; onCreate: (name: string) => Promise<void>; onRevoke: (agent: Agent) => void
 }) {
+  const [copied, setCopied] = useState(false)
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = event.currentTarget
@@ -91,7 +92,12 @@ export function AgentsPage({ agents, pending, onCreate, onRevoke }: {
     if (name) { await onCreate(name); form.reset() }
   }
   return <div className="page-stack">
-    <section className="panel connect-panel"><div><span className="eyebrow">NEW AGENT</span><h2>Create an agent</h2><p>Each agent gets its own gateway token. Grant app tools after creating it.</p></div>
+    <section className="panel connect-panel"><div><span className="eyebrow">CONNECT A HOST</span><h2>Add Agent Connect to your MCP host</h2><p>Add this URL as a remote MCP server in Claude Code, Codex, Cursor, or any host that supports MCP OAuth. The host opens a browser page where you name the agent and choose its tools. No token to copy.</p></div>
+      <div className="url-form"><code className="mcp-url">{mcpUrl}</code><button type="button" className="button primary" onClick={async () => {
+        try { await navigator.clipboard.writeText(mcpUrl); setCopied(true) } catch { setCopied(false) }
+      }}>{copied ? 'Copied' : 'Copy URL'}</button></div>
+    </section>
+    <section className="panel connect-panel"><div><span className="eyebrow">MANUAL TOKEN</span><h2>Create an agent with a token</h2><p>For hosts without OAuth support. The agent gets a static gateway token; grant app tools after creating it.</p></div>
       <form className="url-form" onSubmit={submit}><label className="sr-only" htmlFor="agent-name">Agent name</label><input id="agent-name" name="name" maxLength={100} required placeholder="Research assistant" disabled={pending} /><button className="button primary" disabled={pending}>{pending ? 'Creating…' : 'Create agent'}</button></form>
     </section>
     <section className="panel"><SectionHeading title="Your agents" description={`${agents.filter(agent => !agent.revoked_at).length} active`} />

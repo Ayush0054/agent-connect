@@ -7,7 +7,7 @@ export type AppManifest = {
   oauth: { authorization_url: string; token_url: string; client_id: string; scope?: string }
 }
 
-async function readSmallJson(response: Response): Promise<unknown> {
+export async function readSmallJson(response: Response): Promise<unknown> {
   if (!response.body) throw new Error('Empty app manifest')
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []

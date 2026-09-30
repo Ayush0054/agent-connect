@@ -1,11 +1,11 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono'
-import { accessOwner, agentFromBearer, execute, first, randomString, rows, sha256, trustedUrl, type Agent, type Connection, type Env, type Grant } from './core'
+import { accessOwner, agentFromBearer, execute, first, randomString, rows, sha256, trustedUrl, type Agent, type AppEnv, type Connection, type Env, type Grant } from './core'
 import { discoverTools, serveMcp } from './mcp'
 import { oauthCallback, startOAuth } from './oauth'
 import { publicJwks } from './assertion'
 import { discoverApp } from './discovery'
+import { registerHostAuth, resourceMetadataUrl } from './hostAuth'
 
-type AppEnv = { Bindings: Env; Variables: { owner: string } }
 const app = new Hono<AppEnv>()
 
 app.use('*', async (c, next) => {
@@ -22,15 +22,21 @@ const adminAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
   const method = c.req.method
   if (method !== 'GET' && method !== 'HEAD') {
     const origin = c.req.header('Origin')
-    if (origin && origin !== new URL(c.env.PUBLIC_BASE_URL).origin) return c.text('Invalid origin', 403)
-    if (!c.req.header('Content-Type')?.startsWith('application/json')) return c.text('JSON body required', 415)
+    const adminOrigin = new URL(c.env.PUBLIC_BASE_URL).origin
+    if (new URL(c.req.url).pathname === '/oauth/authorize') {
+      // The host consent page is a plain HTML form, so require a same-origin Origin header instead of JSON.
+      if (origin !== adminOrigin) return c.text('Invalid origin', 403)
+    } else {
+      if (origin && origin !== adminOrigin) return c.text('Invalid origin', 403)
+      if (!c.req.header('Content-Type')?.startsWith('application/json')) return c.text('JSON body required', 415)
+    }
   }
   c.set('owner', owner)
   await next()
 }
 
 app.onError((error, c) => {
-  console.error('Request failed:', error.name)
+  console.error('Request failed:', error.name, error.message)
   return c.json({ error: 'Request failed' }, 500)
 })
 
@@ -46,7 +52,7 @@ app.all('/mcp', async c => {
   const origin = c.req.header('Origin')
   if (origin && origin !== new URL(c.env.MCP_BASE_URL).origin) return c.text('Invalid origin', 403)
   const agent = await agentFromBearer(c.req.raw, c.env)
-  if (!agent) return c.text('Unauthorized', 401, { 'WWW-Authenticate': 'Bearer realm="agent-connect"' })
+  if (!agent) return c.text('Unauthorized', 401, { 'WWW-Authenticate': `Bearer resource_metadata="${resourceMetadataUrl(c.env)}"` })
   return serveMcp(c.req.raw, agent, c.env)
 })
 
@@ -54,6 +60,9 @@ app.use('/', adminAuth)
 app.use('/assets/*', adminAuth)
 app.use('/api/*', adminAuth)
 app.use('/oauth/callback', adminAuth)
+app.use('/oauth/authorize', adminAuth)
+
+registerHostAuth(app)
 
 app.get('/', c => c.env.ASSETS.fetch(c.req.raw))
 app.get('/assets/*', c => c.env.ASSETS.fetch(c.req.raw))
@@ -72,7 +81,7 @@ app.get('/api/overview', async c => {
     rows(c.env,
       'SELECT l.id, l.agent_id, l.connection_id, l.tool_name, l.outcome, l.created_at FROM action_log l JOIN agents a ON a.id = l.agent_id WHERE a.owner_sub = ? ORDER BY l.created_at DESC LIMIT 30', [owner]),
   ])
-  return c.json({ agents, connections, grants, actions })
+  return c.json({ agents, connections, grants, actions, mcp_url: `${c.env.MCP_BASE_URL}/mcp` })
 })
 
 app.post('/api/agents', async c => {

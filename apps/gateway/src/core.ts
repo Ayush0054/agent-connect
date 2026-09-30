@@ -20,7 +20,9 @@ export type Env = {
   ALLOW_LOOPBACK_APPS?: string
 }
 
-export type Agent = { id: string; owner_sub: string; name: string; token_hash: string; revoked_at: string | null; created_at: string }
+export type AppEnv = { Bindings: Env; Variables: { owner: string } }
+
+export type Agent = { id: string; owner_sub: string; name: string; token_hash: string | null; revoked_at: string | null; created_at: string }
 export type Connection = {
   id: string
   owner_sub: string
@@ -53,6 +55,10 @@ export async function first<T>(env: Env, sql: string, params: Array<string | num
 
 export async function execute(env: Env, sql: string, params: Array<string | number | null> = []) {
   return db(env).execute(sql, params)
+}
+
+export function dateSql(date: Date): string {
+  return date.toISOString().slice(0, 23).replace('T', ' ')
 }
 
 export function randomString(bytes = 32): string {
@@ -137,5 +143,9 @@ export async function agentFromBearer(request: Request, env: Env): Promise<Agent
   const header = request.headers.get('Authorization')
   if (!header?.startsWith('Bearer ac_')) return null
   const hash = await sha256(header.slice(7))
-  return first<Agent>(env, 'SELECT * FROM agents WHERE token_hash = ? AND revoked_at IS NULL', [hash])
+  const agent = await first<Agent>(env, 'SELECT * FROM agents WHERE token_hash = ? AND revoked_at IS NULL', [hash])
+  if (agent) return agent
+  return first<Agent>(env,
+    "SELECT a.* FROM agent_tokens t JOIN agents a ON a.id = t.agent_id WHERE t.token_hash = ? AND t.kind = 'access' AND t.expires_at > ? AND a.revoked_at IS NULL",
+    [hash, dateSql(new Date())])
 }
