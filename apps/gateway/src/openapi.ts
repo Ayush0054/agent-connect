@@ -139,7 +139,7 @@ export function parseSpec(text: string, specUrl: string, env: Env, baseOverride?
         const content = isObject(body.content) ? body.content : {}
         const json = follow(doc, content['application/json'])
         // Operations that only take non-JSON bodies (uploads, forms) cannot be called by this adapter.
-        if (!json && body.required === true) continue
+        if (!json && (body.required === true || Object.keys(content).length)) continue
         if (json && !('body' in properties)) {
           properties.body = toJsonSchema(doc, json.schema ?? { type: 'object' })
           if (body.required === true) required.push('body')
@@ -152,7 +152,10 @@ export function parseSpec(text: string, specUrl: string, env: Env, baseOverride?
         // Very large schemas cost too many tokens; keep the argument names and let the app validate.
         inputSchema = { type: 'object', properties: Object.fromEntries(Object.keys(properties).map(name => [name, {}])), ...(required.length ? { required } : {}) }
       }
-      const summary = [operation.summary, operation.description].filter(value => typeof value === 'string' && value.trim()).join('. ')
+      const summary = [operation.summary, operation.description]
+        .filter((value): value is string => typeof value === 'string' && Boolean(value.trim()))
+        .map((value, index, all) => index < all.length - 1 ? value.trim().replace(/\.$/, '') : value.trim())
+        .join('. ')
       tools.push({
         name: toolName(operation.operationId, method, path, taken),
         description: (summary || `${method.toUpperCase()} ${path}`).slice(0, 1000),
@@ -173,10 +176,13 @@ export async function importSpec(specUrl: string, env: Env, baseOverride?: strin
   try { url = trustedUrl(specUrl, env) } catch { throw new SpecError('The spec URL must be a public HTTPS URL') }
   let text: string
   try {
-    const response = await fetch(url, { headers: { Accept: 'application/json, application/yaml, text/yaml' }, redirect: 'manual', signal: AbortSignal.timeout(15_000) })
+    const response = await fetch(url, { headers: { Accept: 'application/json, application/yaml, text/yaml' }, redirect: 'manual', signal: AbortSignal.timeout(30_000) })
     if (!response.ok) throw new Error('Spec request failed')
     text = await readLimitedText(response, MAX_SPEC_BYTES)
-  } catch { throw new SpecError('Could not fetch the spec, or it is larger than 2 MB') }
+  } catch (error) {
+    console.warn('Spec fetch failed:', error instanceof Error ? error.name : error)
+    throw new SpecError('Could not fetch the spec within 30 seconds, or it is larger than 2 MB')
+  }
   return parseSpec(text, url, env, baseOverride)
 }
 
@@ -197,7 +203,8 @@ export function storedTools(connection: Connection, env: Env): Promise<StoredToo
 export function apiKeyHeader(header: unknown, prefix: unknown): { header: string; prefix: string } | null {
   const name = typeof header === 'string' && header.trim() ? header.trim() : 'Authorization'
   const lead = typeof prefix === 'string' ? prefix : name.toLowerCase() === 'authorization' ? 'Bearer ' : ''
-  if (!/^[A-Za-z0-9-]{1,255}$/.test(name) || reservedHeaders.has(name.toLowerCase())) return null
+  // RFC 9110 token characters; real APIs use names such as `api_key`.
+  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,255}$/.test(name) || reservedHeaders.has(name.toLowerCase())) return null
   if (lead.length > 64 || !/^[\x20-\x7e]*$/.test(lead)) return null
   return { header: name, prefix: lead }
 }
