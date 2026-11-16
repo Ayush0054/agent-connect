@@ -1,5 +1,5 @@
 export type Agent = { id: string; name: string; created_at: string; revoked_at: string | null }
-export type Connection = { id: string; name: string; mcp_url: string; connected_at: string | null }
+export type Connection = { id: string; name: string; kind: 'mcp' | 'openapi'; auth_kind: 'oauth' | 'api_key'; mcp_url: string; connected_at: string | null }
 export type Grant = { agent_id: string; connection_id: string; tool_name: string }
 export type Action = { id: string; agent_id: string; connection_id: string; tool_name: string; outcome: string; created_at: string }
 export type Tool = { name: string; description?: string; inputSchema: Record<string, unknown> }

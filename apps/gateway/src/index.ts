@@ -1,6 +1,7 @@
 import { Hono, type Context, type MiddlewareHandler } from 'hono'
-import { accessOwner, agentFromBearer, execute, first, randomString, rows, sha256, trustedUrl, type Agent, type AppEnv, type Connection, type Env, type Grant } from './core'
-import { discoverTools, serveMcp } from './mcp'
+import { accessOwner, agentFromBearer, encrypt, execute, first, randomString, rows, sha256, trustedUrl, type Agent, type AppEnv, type Connection, type Env, type Grant } from './core'
+import { listTools, serveMcp } from './mcp'
+import { apiKeyHeader, importSpec, saveTools, SpecError } from './openapi'
 import { oauthCallback, startOAuth } from './oauth'
 import { publicJwks } from './assertion'
 import { discoverApp } from './discovery'
@@ -74,8 +75,8 @@ app.get('/api/overview', async c => {
   const [agents, connections, grants, actions] = await Promise.all([
     rows<Pick<Agent, 'id' | 'name' | 'created_at' | 'revoked_at'>>(c.env,
       'SELECT id, name, created_at, revoked_at FROM agents WHERE owner_sub = $1 ORDER BY created_at DESC', [owner]),
-    rows<Pick<Connection, 'id' | 'name' | 'mcp_url' | 'connected_at'>>(c.env,
-      'SELECT id, name, mcp_url, connected_at FROM connections WHERE owner_sub = $1 ORDER BY created_at DESC', [owner]),
+    rows<Pick<Connection, 'id' | 'name' | 'kind' | 'auth_kind' | 'mcp_url' | 'connected_at'>>(c.env,
+      'SELECT id, name, kind, auth_kind, mcp_url, connected_at FROM connections WHERE owner_sub = $1 ORDER BY created_at DESC', [owner]),
     rows<Grant>(c.env,
       'SELECT g.agent_id, g.connection_id, g.tool_name FROM grants g JOIN agents a ON a.id = g.agent_id WHERE a.owner_sub = $1', [owner]),
     rows(c.env,
@@ -103,6 +104,7 @@ app.post('/api/agents/:id/revoke', async c => {
 app.post('/api/connections', async c => {
   const body = await c.req.json().catch(() => null) as Record<string, unknown> | null
   if (!body) return c.json({ error: 'Invalid JSON' }, 400)
+  if (body.kind === 'openapi') return connectOpenApi(c, body)
   let details = body
   const appUrl = typeof body.app_url === 'string' ? body.app_url : body.website_url
   if (typeof appUrl === 'string') {
@@ -138,16 +140,76 @@ app.post('/api/connections', async c => {
   return c.json({ id, authorize_url: `${c.env.PUBLIC_BASE_URL}/api/connections/${id}/authorize` }, 201)
 })
 
+/** Connect an app that has a REST API and an OpenAPI spec but no MCP server. */
+async function connectOpenApi(c: Context<AppEnv>, body: Record<string, unknown>) {
+  const text = (value: unknown) => typeof value === 'string' ? value.trim() : ''
+  const auth = (typeof body.auth === 'object' && body.auth !== null ? body.auth : {}) as Record<string, unknown>
+  if (auth.type !== 'api_key' && auth.type !== 'oauth') return c.json({ error: 'Choose API key or OAuth' }, 400)
+
+  let spec: Awaited<ReturnType<typeof importSpec>>
+  try { spec = await importSpec(text(body.spec_url), c.env, text(body.base_url) || undefined) }
+  catch (error) {
+    if (error instanceof SpecError) return c.json({ error: error.message }, 422)
+    throw error
+  }
+  const name = text(body.name) || spec.title || new URL(spec.baseUrl).hostname
+  if (name.length > 100) return c.json({ error: 'Name must be at most 100 characters' }, 400)
+
+  const id = crypto.randomUUID()
+  const owner = c.get('owner')
+  const specUrl = trustedUrl(text(body.spec_url), c.env)
+  if (auth.type === 'api_key') {
+    const sent = apiKeyHeader(auth.header, auth.prefix)
+    const value = typeof auth.value === 'string' ? auth.value.trim() : ''
+    if (!sent) return c.json({ error: 'Invalid API key header or prefix' }, 400)
+    if (!value || value.length > 4096 || !/^[\x21-\x7e]+$/.test(value)) return c.json({ error: 'Enter the API key' }, 400)
+    await execute(c.env,
+      "INSERT INTO connections (id, owner_sub, name, kind, mcp_url, spec_url, auth_kind, auth_header, auth_prefix, access_token_ciphertext, connected_at) VALUES ($1, $2, $3, 'openapi', $4, $5, 'api_key', $6, $7, $8, now())",
+      [id, owner, name, spec.baseUrl, specUrl, sent.header, sent.prefix, await encrypt(c.env, value)])
+    await saveTools(id, spec.tools, c.env)
+    return c.json({ id, name, base_url: spec.baseUrl, tools_imported: spec.tools.length }, 201)
+  }
+
+  const clientId = text(auth.client_id)
+  const scope = text(auth.scope)
+  if (!clientId || clientId.length > 2048 || scope.length > 2048) return c.json({ error: 'Invalid client ID or scope' }, 400)
+  let authorizationUrl: string, tokenUrl: string
+  try {
+    authorizationUrl = trustedUrl(text(auth.authorization_url), c.env)
+    tokenUrl = trustedUrl(text(auth.token_url), c.env)
+  } catch { return c.json({ error: 'OAuth endpoints must be public HTTPS URLs' }, 400) }
+  await execute(c.env,
+    "INSERT INTO connections (id, owner_sub, name, kind, mcp_url, spec_url, auth_kind, authorization_url, token_url, client_id, scope) VALUES ($1, $2, $3, 'openapi', $4, $5, 'oauth', $6, $7, $8, $9)",
+    [id, owner, name, spec.baseUrl, specUrl, authorizationUrl, tokenUrl, clientId, scope])
+  await saveTools(id, spec.tools, c.env)
+  return c.json({ id, name, base_url: spec.baseUrl, tools_imported: spec.tools.length, authorize_url: `${c.env.PUBLIC_BASE_URL}/api/connections/${id}/authorize` }, 201)
+}
+
+/** Re-import the spec. The base URL is kept, and grants for operations that no longer exist are removed. */
+app.post('/api/connections/:id/refresh', async c => {
+  const connection = await first<Connection>(c.env, "SELECT * FROM connections WHERE id = $1 AND owner_sub = $2 AND kind = 'openapi'", [c.req.param('id'), c.get('owner')])
+  if (!connection?.spec_url) return c.json({ error: 'Connection not found' }, 404)
+  let spec: Awaited<ReturnType<typeof importSpec>>
+  try { spec = await importSpec(connection.spec_url, c.env, connection.mcp_url) }
+  catch (error) {
+    if (error instanceof SpecError) return c.json({ error: error.message }, 422)
+    throw error
+  }
+  await saveTools(connection.id, spec.tools, c.env)
+  await execute(c.env, 'DELETE FROM grants g WHERE g.connection_id = $1 AND NOT EXISTS (SELECT 1 FROM connection_tools t WHERE t.connection_id = g.connection_id AND t.tool_name = g.tool_name)', [connection.id])
+  return c.json({ ok: true, tools_imported: spec.tools.length })
+})
+
 app.get('/api/connections/:id/authorize', async c => {
   const connection = await first<Connection>(c.env, 'SELECT * FROM connections WHERE id = $1 AND owner_sub = $2', [c.req.param('id'), c.get('owner')])
-  if (!connection) return c.text('Connection not found', 404)
+  if (!connection || connection.auth_kind !== 'oauth') return c.text('Connection not found', 404)
   return startOAuth(connection, c.env)
 })
 
 app.get('/api/connections/:id/tools', async c => {
   const connection = await first<Connection>(c.env, 'SELECT * FROM connections WHERE id = $1 AND owner_sub = $2', [c.req.param('id'), c.get('owner')])
   if (!connection?.access_token_ciphertext) return c.json({ error: 'App not connected' }, 409)
-  try { return c.json({ tools: await discoverTools(connection, c.env) }) }
+  try { return c.json({ tools: await listTools(connection, c.env) }) }
   catch { return c.json({ error: 'Could not reach app MCP server' }, 502) }
 })
 
@@ -155,6 +217,12 @@ app.post('/api/connections/:id/disconnect', async c => {
   const connection = await first<Connection>(c.env, 'SELECT * FROM connections WHERE id = $1 AND owner_sub = $2', [c.req.param('id'), c.get('owner')])
   if (!connection) return c.json({ error: 'Connection not found' }, 404)
   await execute(c.env, 'DELETE FROM grants WHERE connection_id = $1', [connection.id])
+  if (connection.auth_kind === 'api_key') {
+    // There is no sign-in page to reconnect through, so remove the connection with its key.
+    await execute(c.env, 'DELETE FROM connection_tools WHERE connection_id = $1', [connection.id])
+    await execute(c.env, 'DELETE FROM connections WHERE id = $1', [connection.id])
+    return c.json({ ok: true })
+  }
   await execute(c.env, 'UPDATE connections SET access_token_ciphertext = NULL, refresh_token_ciphertext = NULL, token_expires_at = NULL, connected_at = NULL WHERE id = $1', [connection.id])
   return c.json({ ok: true })
 })
@@ -173,8 +241,8 @@ async function grantTarget(c: Context<AppEnv>) {
 app.post('/api/grants', async c => {
   const target = await grantTarget(c)
   if (!target) return c.json({ error: 'Agent, connection, or tool is invalid' }, 400)
-  let tools: Awaited<ReturnType<typeof discoverTools>>
-  try { tools = await discoverTools(target.connection, c.env) }
+  let tools: Awaited<ReturnType<typeof listTools>>
+  try { tools = await listTools(target.connection, c.env) }
   catch { return c.json({ error: 'Could not verify app tool' }, 502) }
   if (!tools.some(tool => tool.name === target.toolName)) return c.json({ error: 'App tool not found' }, 404)
   await execute(c.env, 'INSERT INTO grants (agent_id, connection_id, tool_name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [target.agent.id, target.connection.id, target.toolName])

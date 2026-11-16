@@ -13,10 +13,18 @@ CREATE TABLE connections (
   id VARCHAR(64) PRIMARY KEY,
   owner_sub VARCHAR(255) NOT NULL,
   name VARCHAR(255) NOT NULL,
+  -- 'mcp': the app runs its own MCP server. 'openapi': the gateway calls the app's REST API.
+  kind VARCHAR(16) NOT NULL DEFAULT 'mcp',
+  -- Upstream URL: the app's MCP endpoint, or the REST API base URL for 'openapi' connections.
   mcp_url VARCHAR(2048) NOT NULL,
-  authorization_url VARCHAR(2048) NOT NULL,
-  token_url VARCHAR(2048) NOT NULL,
-  client_id VARCHAR(2048) NOT NULL,
+  spec_url VARCHAR(2048),
+  -- 'oauth' or 'api_key'. An API key is stored in access_token_ciphertext.
+  auth_kind VARCHAR(16) NOT NULL DEFAULT 'oauth',
+  auth_header VARCHAR(255),
+  auth_prefix VARCHAR(64),
+  authorization_url VARCHAR(2048) NOT NULL DEFAULT '',
+  token_url VARCHAR(2048) NOT NULL DEFAULT '',
+  client_id VARCHAR(2048) NOT NULL DEFAULT '',
   scope VARCHAR(2048) NOT NULL DEFAULT '',
   access_token_ciphertext TEXT,
   refresh_token_ciphertext TEXT,
@@ -25,6 +33,19 @@ CREATE TABLE connections (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX connections_owner ON connections (owner_sub);
+
+-- Tools imported from an OpenAPI spec, one per operation.
+CREATE TABLE connection_tools (
+  connection_id VARCHAR(64) NOT NULL,
+  tool_name VARCHAR(255) NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  method VARCHAR(16) NOT NULL,
+  path VARCHAR(2048) NOT NULL,
+  -- JSON: the tool's input schema, and where each argument goes ([{ "name", "in" }]).
+  input_schema TEXT NOT NULL,
+  params TEXT NOT NULL,
+  PRIMARY KEY (connection_id, tool_name)
+);
 
 CREATE TABLE grants (
   agent_id VARCHAR(64) NOT NULL,

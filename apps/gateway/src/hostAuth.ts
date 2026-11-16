@@ -7,7 +7,7 @@ import type { Context, Hono } from 'hono'
 import { html } from 'hono/html'
 import { execute, first, pkceChallenge, randomString, rows, sha256, trustedUrl, type Agent, type AppEnv, type Connection, type Env } from './core'
 import { readSmallJson } from './discovery'
-import { discoverTools } from './mcp'
+import { listTools } from './mcp'
 
 const ACCESS_TTL_SECONDS = 3600
 const REFRESH_TTL_SECONDS = 30 * 24 * 3600
@@ -128,7 +128,7 @@ const errorPage = (message: string) => page('Cannot connect', html`<div class="c
 async function connectedTools(owner: string, env: Env) {
   const connections = await rows<Connection>(env, 'SELECT * FROM connections WHERE owner_sub = $1 AND access_token_ciphertext IS NOT NULL ORDER BY created_at', [owner])
   return Promise.all(connections.map(async connection => {
-    try { return { connection, tools: (await discoverTools(connection, env)).map(tool => ({ name: tool.name, description: tool.description ?? '' })) } }
+    try { return { connection, tools: (await listTools(connection, env)).map(tool => ({ name: tool.name, description: tool.description ?? '' })) } }
     catch { return { connection, tools: null } }
   }))
 }
@@ -262,7 +262,7 @@ export function registerHostAuth(app: Hono<AppEnv>) {
     for (const [connectionId, toolNames] of byConnection) {
       const connection = await first<Connection>(c.env, 'SELECT * FROM connections WHERE id = $1 AND owner_sub = $2 AND access_token_ciphertext IS NOT NULL', [connectionId, owner])
       if (!connection) continue
-      const live = new Set((await discoverTools(connection, c.env).catch(() => [])).map(tool => tool.name))
+      const live = new Set((await listTools(connection, c.env).catch(() => [])).map(tool => tool.name))
       for (const toolName of toolNames) {
         if (live.has(toolName)) await execute(c.env, 'INSERT INTO grants (agent_id, connection_id, tool_name) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING', [agentId, connectionId, toolName])
       }

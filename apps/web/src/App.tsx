@@ -83,8 +83,9 @@ export function App() {
 
   function connectApp(values: Record<string, unknown>) {
     return mutate(async () => {
-      const result = await send<{ authorize_url: string }>('/api/connections', values)
-      window.location.assign(result.authorize_url)
+      const result = await send<{ authorize_url?: string; name?: string; tools_imported?: number }>('/api/connections', values)
+      if (result.authorize_url) window.location.assign(result.authorize_url)
+      else setNotice(`${result.name ?? 'The app'} is connected with ${result.tools_imported ?? 0} tools. Grant them on the Permissions page.`)
     })
   }
 

@@ -26,7 +26,13 @@ export type Connection = {
   id: string
   owner_sub: string
   name: string
+  kind: 'mcp' | 'openapi'
+  /** The app's MCP endpoint, or the REST API base URL for 'openapi' connections. */
   mcp_url: string
+  spec_url: string | null
+  auth_kind: 'oauth' | 'api_key'
+  auth_header: string | null
+  auth_prefix: string | null
   authorization_url: string
   token_url: string
   client_id: string

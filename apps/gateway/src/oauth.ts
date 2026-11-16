@@ -16,7 +16,8 @@ export async function startOAuth(connection: Connection, env: Env): Promise<Resp
   authorize.searchParams.set('state', state)
   authorize.searchParams.set('code_challenge', await pkceChallenge(verifier))
   authorize.searchParams.set('code_challenge_method', 'S256')
-  authorize.searchParams.set('resource', connection.mcp_url)
+  // RFC 8707 resource indicators are an MCP requirement; plain REST apps often reject unknown parameters.
+  if (connection.kind === 'mcp') authorize.searchParams.set('resource', connection.mcp_url)
   if (connection.scope) authorize.searchParams.set('scope', connection.scope)
   return Response.redirect(authorize, 302)
 }
@@ -62,8 +63,8 @@ export async function oauthCallback(request: Request, owner: string, env: Env): 
     grant_type: 'authorization_code', code, client_id: connection.client_id,
     code_verifier: await decrypt(env, record.verifier_ciphertext),
     redirect_uri: `${env.PUBLIC_BASE_URL}/oauth/callback`,
-    resource: connection.mcp_url,
   })
+  if (connection.kind === 'mcp') fields.set('resource', connection.mcp_url)
   try {
     await saveTokens(connection, env, await exchangeToken(connection, env, fields))
   } catch {
@@ -74,11 +75,13 @@ export async function oauthCallback(request: Request, owner: string, env: Env): 
 
 export async function appToken(connection: Connection, env: Env): Promise<string> {
   if (!connection.access_token_ciphertext) throw new Error('App is not connected')
+  if (connection.auth_kind === 'api_key') return decrypt(env, connection.access_token_ciphertext)
   const expires = connection.token_expires_at ? connection.token_expires_at.getTime() : Infinity
   if (expires > Date.now() + 60_000) return decrypt(env, connection.access_token_ciphertext)
   if (!connection.refresh_token_ciphertext) throw new Error('App authorization expired')
   const refresh = await decrypt(env, connection.refresh_token_ciphertext)
-  const fields = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refresh, client_id: connection.client_id, resource: connection.mcp_url })
+  const fields = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refresh, client_id: connection.client_id })
+  if (connection.kind === 'mcp') fields.set('resource', connection.mcp_url)
   const result = await exchangeToken(connection, env, fields)
   await saveTokens(connection, env, result, refresh)
   return String(result.access_token)
