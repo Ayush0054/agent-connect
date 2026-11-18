@@ -1,5 +1,10 @@
+// A short-lived signed JWT sent with every call to an app, so the app can verify which agent is acting.
+// Apps check it against the public keys at /.well-known/agent-connect/jwks.json.
 import { importJWK, SignJWT } from 'jose'
-import type { Agent, Connection, Env } from './core'
+import type { Agent } from '../types/agents'
+import type { Connection } from '../types/connections'
+import type { Env } from '../types/env'
+import { sha256Base64url } from '../utils/crypto'
 
 type SigningJwk = { kty: string; crv: string; x: string; y: string; d: string; kid?: string }
 
@@ -16,17 +21,7 @@ export function publicJwks(env: Env) {
   return { keys: [{ kty, crv, x, y, kid: kid ?? 'current', alg: 'ES256', use: 'sig' }] }
 }
 
-function base64url(bytes: Uint8Array): string {
-  let value = ''
-  for (const byte of bytes) value += String.fromCharCode(byte)
-  return btoa(value).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-async function tokenHash(token: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))
-  return base64url(new Uint8Array(digest))
-}
-
+/** Valid for 60 seconds, for one tool, and only together with the app token whose hash is in `ath`. */
 export async function agentAssertion(agent: Agent, connection: Connection, toolName: string, appAccessToken: string, env: Env): Promise<string> {
   const jwk = signingJwk(env)
   const key = await importJWK(jwk, 'ES256')
@@ -35,7 +30,7 @@ export async function agentAssertion(agent: Agent, connection: Connection, toolN
     owner_sub: agent.owner_sub,
     agent_name: agent.name,
     tool_name: toolName,
-    ath: await tokenHash(appAccessToken),
+    ath: await sha256Base64url(appAccessToken),
   })
     .setProtectedHeader({ alg: 'ES256', kid: jwk.kid ?? 'current', typ: 'JWT' })
     .setIssuer(env.MCP_BASE_URL)

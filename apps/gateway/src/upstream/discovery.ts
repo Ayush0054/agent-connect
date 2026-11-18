@@ -1,32 +1,8 @@
-import { trustedUrl, type Env } from './core'
-
-export type AppManifest = {
-  version: 1
-  name: string
-  mcp_url: string
-  oauth: { authorization_url: string; token_url: string; client_id: string; scope?: string }
-}
-
-export async function readSmallJson(response: Response): Promise<unknown> {
-  if (!response.body) throw new Error('Empty app manifest')
-  const reader = response.body.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.length
-    if (size > 16_384) {
-      await reader.cancel()
-      throw new Error('App manifest is too large')
-    }
-    chunks.push(value)
-  }
-  const bytes = new Uint8Array(size)
-  let offset = 0
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length }
-  return JSON.parse(new TextDecoder().decode(bytes))
-}
+// Read the manifest an MCP app publishes at /.well-known/agent-connect.json.
+import type { AppManifest } from '../types/connections'
+import type { Env } from '../types/env'
+import { readSmallJson } from '../utils/http'
+import { trustedUrl } from '../utils/urls'
 
 export async function discoverApp(appUrl: string, env: Env): Promise<AppManifest> {
   const origin = new URL(trustedUrl(appUrl, env)).origin

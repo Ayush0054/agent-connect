@@ -14,6 +14,7 @@
     "build:sdk": "npm run build --workspace @agent-connect/server-sdk",
     "deploy": "npm run build:web && npm run deploy --workspace @agent-connect/gateway",
     "dev:notes": "npm run dev --workspace @agent-connect/example-notes-app",
+    "dev:legacy": "npm run dev --workspace @agent-connect/example-legacy-api",
     "db:up": "docker compose up -d",
     "setup:dev": "node scripts/dev-setup.mjs"
   }

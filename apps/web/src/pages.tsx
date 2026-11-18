@@ -56,6 +56,18 @@ export function ConnectionsPage({ connections, pending, onConnect, onDisconnect 
     event.preventDefault()
     await onConnect(Object.fromEntries(new FormData(event.currentTarget)))
   }
+  const [restAuth, setRestAuth] = useState<'api_key' | 'oauth'>('api_key')
+  async function submitRest(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const form = event.currentTarget
+    const field = (name: string) => String(new FormData(form).get(name) ?? '').trim()
+    const auth = restAuth === 'api_key'
+      // An empty prefix on the Authorization header is left out so the gateway applies "Bearer ".
+      ? { type: 'api_key', header: field('header'), prefix: String(new FormData(form).get('prefix') ?? '') || (field('header').toLowerCase() === 'authorization' ? undefined : ''), value: field('value') }
+      : { type: 'oauth', authorization_url: field('authorization_url'), token_url: field('token_url'), client_id: field('client_id'), scope: field('scope') }
+    await onConnect({ kind: 'openapi', spec_url: field('spec_url'), name: field('name'), base_url: field('base_url'), auth })
+    if (restAuth === 'api_key') form.reset()
+  }
   return <div className="page-stack">
     <section className="panel connect-panel"><div><span className="eyebrow">NEW CONNECTION</span><h2>Connect an app</h2><p>Paste its service URL. Agent Connect will discover its MCP server and start the app’s approval flow.</p></div>
       <form className="url-form" onSubmit={submitApp}><label className="sr-only" htmlFor="app-url">App service URL</label><input id="app-url" type="url" name="app_url" placeholder="https://app.example.com" required disabled={pending} /><button className="button primary" disabled={pending}>{pending ? 'Connecting…' : 'Continue'}</button></form>
@@ -68,13 +80,30 @@ export function ConnectionsPage({ connections, pending, onConnect, onDisconnect 
         <label>Scopes<input name="scope" placeholder="read write" /></label>
         <button className="button secondary" disabled={pending}>Connect manually</button>
       </form></details>
+      <details className="manual-setup"><summary>Import a REST API from an OpenAPI spec (no MCP server needed)</summary><form className="form-grid" onSubmit={submitRest}>
+        <label>OpenAPI spec URL<input name="spec_url" type="url" required placeholder="https://api.example.com/openapi.json" /></label>
+        <label>App name (optional)<input name="name" maxLength={100} placeholder="From the spec title" /></label>
+        <label>API base URL (optional)<input name="base_url" type="url" placeholder="From the spec's servers" /></label>
+        <label>Sign-in method<select value={restAuth} onChange={event => setRestAuth(event.target.value as 'api_key' | 'oauth')}><option value="api_key">API key</option><option value="oauth">OAuth</option></select></label>
+        {restAuth === 'api_key' ? <>
+          <label>Header name<input name="header" defaultValue="Authorization" required /></label>
+          <label>Value prefix (optional)<input name="prefix" placeholder="Bearer for Authorization, none otherwise" /></label>
+          <label>API key<input name="value" type="password" required autoComplete="off" /></label>
+        </> : <>
+          <label>OAuth authorization URL<input name="authorization_url" type="url" required /></label>
+          <label>OAuth token URL<input name="token_url" type="url" required /></label>
+          <label>Public OAuth client ID<input name="client_id" required /></label>
+          <label>Scopes<input name="scope" placeholder="read write" /></label>
+        </>}
+        <button className="button secondary" disabled={pending}>Import API</button>
+      </form></details>
     </section>
     <section className="panel"><SectionHeading title="Your apps" description={`${connections.length} registered ${connections.length === 1 ? 'app' : 'apps'}`} />
       {!connections.length ? <Empty title="No apps yet" description="Enter an app service URL above to add your first connection." /> :
         <div className="item-list">{connections.map(connection => <div className="list-row connection-row" key={connection.id}>
-          <span className="site-avatar">{connection.name.slice(0, 1).toUpperCase()}</span><div className="row-main"><strong>{connection.name}</strong><small>{connection.mcp_url}</small></div>
+          <span className="site-avatar">{connection.name.slice(0, 1).toUpperCase()}</span><div className="row-main"><strong>{connection.name}</strong><small>{connection.kind === 'openapi' ? 'REST' : 'MCP'} · {connection.mcp_url}</small></div>
           <span className={connection.connected_at ? 'status connected' : 'status idle'}>{connection.connected_at ? 'Connected' : 'Needs login'}</span>
-          <div className="row-actions"><a className="button small secondary" href={`/api/connections/${encodeURIComponent(connection.id)}/authorize`}>{connection.connected_at ? 'Reconnect' : 'Connect'}</a>
+          <div className="row-actions">{connection.auth_kind === 'oauth' && <a className="button small secondary" href={`/api/connections/${encodeURIComponent(connection.id)}/authorize`}>{connection.connected_at ? 'Reconnect' : 'Connect'}</a>}
             {connection.connected_at && <button className="button small quiet-danger" disabled={pending} onClick={() => onDisconnect(connection)}>Disconnect</button>}</div>
         </div>)}</div>}
     </section>
@@ -120,7 +149,7 @@ export function PermissionsPage({ data, tools, toolsLoading, pending, agentId, c
       <div className="selector-grid"><label>AGENT<select value={agentId} onChange={event => onAgentChange(event.target.value)}><option value="">Select agent</option>{agents.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></label>
         <label>APP<select value={connectionId} onChange={event => onConnectionChange(event.target.value)}><option value="">Select app</option>{connections.map(connection => <option key={connection.id} value={connection.id}>{connection.name}</option>)}</select></label></div>
     </section>
-    <section className="panel"><SectionHeading title="Available tools" description="The app’s live MCP tool catalog" />
+    <section className="panel"><SectionHeading title="Available tools" description="The app’s MCP tools, or the operations imported from its OpenAPI spec" />
       {!agents.length && <Empty title="Create an agent first" description="Each agent needs its own credential and tool grants." />}
       {!!agents.length && !connections.length && <div className="empty"><h3>Connect an app first</h3><p>An app’s tools appear here after you approve its OAuth connection.</p><button className="button secondary" onClick={() => navigate('connections')}>Go to connections</button></div>}
       {!!agents.length && !!connections.length && (!agentId || !connectionId) && <Empty title="Select both sides" description="Choose an agent and an app to manage their tool access." />}

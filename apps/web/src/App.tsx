@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, send, type Agent, type Connection, type Overview, type Tool } from './api'
+import { api, send, type Agent, type Connection, type ConnectResponse, type CreateAgentResponse, type Overview, type Tool, type ToolsResponse } from './api'
 import { ActivityPage, AgentsPage, ConnectionsPage, OverviewPage, PermissionsPage } from './pages'
 
 type View = 'overview' | 'connections' | 'agents' | 'permissions' | 'activity'
@@ -57,7 +57,7 @@ export function App() {
     if (!selectedConnection) { setTools([]); return }
     let active = true
     setToolsLoading(true)
-    api<{ tools: Tool[] }>(`/api/connections/${encodeURIComponent(selectedConnection)}/tools`)
+    api<ToolsResponse>(`/api/connections/${encodeURIComponent(selectedConnection)}/tools`)
       .then(result => { if (active) { setTools(result.tools); setError('') } })
       .catch(cause => { if (active) { setTools([]); setError(cause instanceof Error ? cause.message : 'Could not load tools') } })
       .finally(() => { if (active) setToolsLoading(false) })
@@ -75,7 +75,7 @@ export function App() {
 
   function createAgent(name: string) {
     return mutate(async () => {
-      const result = await send<Agent & { token: string; mcp_url: string }>('/api/agents', { name })
+      const result = await send<CreateAgentResponse>('/api/agents', { name })
       setIssued({ name: result.name, token: result.token, mcp_url: result.mcp_url })
       setNotice(`${result.name} was created.`)
     })
@@ -83,8 +83,9 @@ export function App() {
 
   function connectApp(values: Record<string, unknown>) {
     return mutate(async () => {
-      const result = await send<{ authorize_url: string }>('/api/connections', values)
-      window.location.assign(result.authorize_url)
+      const result = await send<ConnectResponse>('/api/connections', values)
+      if (result.authorize_url) window.location.assign(result.authorize_url)
+      else setNotice(`${result.name ?? 'The app'} is connected with ${result.tools_imported ?? 0} tools. Grant them on the Permissions page.`)
     })
   }
 
