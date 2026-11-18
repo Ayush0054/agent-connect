@@ -1,14 +1,23 @@
-import { decrypt, encrypt, execute, first, pkceChallenge, randomString, sha256, trustedUrl, type Connection, type Env } from './core'
-
-type OAuthState = { owner_sub: string; connection_id: string; verifier_ciphertext: string; expires_at: Date }
-type TokenResponse = { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown; token_type?: unknown; error?: unknown }
+// The gateway as an OAuth client of a connected app: send the user to the app to sign in,
+// exchange the code, keep the tokens encrypted, and refresh them when they expire.
+import { OAUTH_STATE_TTL_MS } from '../constants'
+import { getConnection, saveConnectionTokens } from '../stores/connections'
+import { consumeOAuthState, getOAuthState, insertOAuthState } from '../stores/oauthStates'
+import type { Connection, TokenResponse } from '../types/connections'
+import type { Env } from '../types/env'
+import { decrypt, encrypt, pkceChallenge, randomString, sha256 } from '../utils/crypto'
+import { trustedUrl } from '../utils/urls'
 
 export async function startOAuth(connection: Connection, env: Env): Promise<Response> {
   const state = randomString()
   const verifier = randomString(64)
-  await execute(env, 'INSERT INTO oauth_states (state_hash, owner_sub, connection_id, verifier_ciphertext, expires_at) VALUES ($1, $2, $3, $4, $5)', [
-    await sha256(state), connection.owner_sub, connection.id, await encrypt(env, verifier), new Date(Date.now() + 10 * 60_000).toISOString(),
-  ])
+  await insertOAuthState(env, {
+    stateHash: await sha256(state),
+    owner: connection.owner_sub,
+    connectionId: connection.id,
+    verifierCiphertext: await encrypt(env, verifier),
+    expiresAt: new Date(Date.now() + OAUTH_STATE_TTL_MS).toISOString(),
+  })
   const authorize = new URL(trustedUrl(connection.authorization_url, env))
   authorize.searchParams.set('response_type', 'code')
   authorize.searchParams.set('client_id', connection.client_id)
@@ -22,7 +31,7 @@ export async function startOAuth(connection: Connection, env: Env): Promise<Resp
   return Response.redirect(authorize, 302)
 }
 
-export async function exchangeToken(connection: Connection, env: Env, fields: URLSearchParams): Promise<TokenResponse> {
+async function exchangeToken(connection: Connection, env: Env, fields: URLSearchParams): Promise<TokenResponse> {
   const response = await fetch(trustedUrl(connection.token_url, env), {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
@@ -41,23 +50,25 @@ async function saveTokens(connection: Connection, env: Env, result: TokenRespons
   const refresh = typeof result.refresh_token === 'string' ? result.refresh_token : previousRefresh
   const expires = typeof result.expires_in === 'number' && Number.isFinite(result.expires_in)
     ? new Date(Date.now() + Math.max(0, result.expires_in) * 1000).toISOString() : null
-  await execute(env, 'UPDATE connections SET access_token_ciphertext = $1, refresh_token_ciphertext = $2, token_expires_at = $3, connected_at = now() WHERE id = $4', [
-    await encrypt(env, access), refresh ? await encrypt(env, refresh) : null, expires, connection.id,
-  ])
+  await saveConnectionTokens(env, connection.id, {
+    accessCiphertext: await encrypt(env, access),
+    refreshCiphertext: refresh ? await encrypt(env, refresh) : null,
+    expiresAt: expires,
+  })
 }
 
+/** The app sends the user back here after sign-in. */
 export async function oauthCallback(request: Request, owner: string, env: Env): Promise<Response> {
   const query = new URL(request.url).searchParams
   const state = query.get('state')
   const code = query.get('code')
   if (!state || !code) return new Response('OAuth authorization was denied or incomplete', { status: 400 })
   const stateHash = await sha256(state)
-  const record = await first<OAuthState>(env, 'SELECT * FROM oauth_states WHERE state_hash = $1', [stateHash])
+  const record = await getOAuthState(env, stateHash)
   if (!record || record.expires_at.getTime() <= Date.now()) return new Response('OAuth state expired', { status: 400 })
   if (owner !== record.owner_sub) return new Response('Account mismatch', { status: 403 })
-  const consumed = await execute(env, 'DELETE FROM oauth_states WHERE state_hash = $1', [stateHash])
-  if (!consumed.rowCount) return new Response('OAuth state already used', { status: 400 })
-  const connection = await first<Connection>(env, 'SELECT * FROM connections WHERE id = $1 AND owner_sub = $2', [record.connection_id, owner])
+  if (!await consumeOAuthState(env, stateHash)) return new Response('OAuth state already used', { status: 400 })
+  const connection = await getConnection(env, record.connection_id, owner)
   if (!connection) return new Response('Connection not found', { status: 404 })
   const fields = new URLSearchParams({
     grant_type: 'authorization_code', code, client_id: connection.client_id,
@@ -73,6 +84,7 @@ export async function oauthCallback(request: Request, owner: string, env: Env): 
   return Response.redirect(`${env.PUBLIC_BASE_URL}/?connected=${encodeURIComponent(connection.id)}`, 302)
 }
 
+/** The credential to send to the app: the stored API key, or an OAuth access token that is refreshed when it is about to expire. */
 export async function appToken(connection: Connection, env: Env): Promise<string> {
   if (!connection.access_token_ciphertext) throw new Error('App is not connected')
   if (connection.auth_kind === 'api_key') return decrypt(env, connection.access_token_ciphertext)

@@ -1,37 +1,8 @@
-import { trustedUrl, type Env } from './core'
-
-export type AppManifest = {
-  version: 1
-  name: string
-  mcp_url: string
-  oauth: { authorization_url: string; token_url: string; client_id: string; scope?: string }
-}
-
-/** Read a response body as text, failing once it exceeds `limit` bytes. */
-export async function readLimitedText(response: Response, limit: number): Promise<string> {
-  if (!response.body) throw new Error('Empty response')
-  const reader = response.body.getReader()
-  const chunks: Uint8Array[] = []
-  let size = 0
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    size += value.length
-    if (size > limit) {
-      await reader.cancel()
-      throw new Error('Response is too large')
-    }
-    chunks.push(value)
-  }
-  const bytes = new Uint8Array(size)
-  let offset = 0
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length }
-  return new TextDecoder().decode(bytes)
-}
-
-export async function readSmallJson(response: Response): Promise<unknown> {
-  return JSON.parse(await readLimitedText(response, 16_384))
-}
+// Read the manifest an MCP app publishes at /.well-known/agent-connect.json.
+import type { AppManifest } from '../types/connections'
+import type { Env } from '../types/env'
+import { readSmallJson } from '../utils/http'
+import { trustedUrl } from '../utils/urls'
 
 export async function discoverApp(appUrl: string, env: Env): Promise<AppManifest> {
   const origin = new URL(trustedUrl(appUrl, env)).origin

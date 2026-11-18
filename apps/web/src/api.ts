@@ -1,9 +1,11 @@
-export type Agent = { id: string; name: string; created_at: string; revoked_at: string | null }
-export type Connection = { id: string; name: string; kind: 'mcp' | 'openapi'; auth_kind: 'oauth' | 'api_key'; mcp_url: string; connected_at: string | null }
-export type Grant = { agent_id: string; connection_id: string; tool_name: string }
-export type Action = { id: string; agent_id: string; connection_id: string; tool_name: string; outcome: string; created_at: string }
-export type Tool = { name: string; description?: string; inputSchema: Record<string, unknown> }
-export type Overview = { agents: Agent[]; connections: Connection[]; grants: Grant[]; actions: Action[]; mcp_url: string }
+// The request and response shapes are the gateway's control-plane contract, so both sides are checked against one definition.
+import type { ActionSummary, AgentSummary, ConnectionSummary, OverviewResponse } from '../../gateway/src/types/api'
+
+export type { ConnectResponse, CreateAgentResponse, Grant, Tool, ToolsResponse } from '../../gateway/src/types/api'
+export type Agent = AgentSummary
+export type Connection = ConnectionSummary
+export type Action = ActionSummary
+export type Overview = OverviewResponse
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers)

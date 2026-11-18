@@ -1,29 +1,20 @@
-// Connect an app that has a REST API but no MCP server: import its OpenAPI
-// spec once, expose each operation as a tool, and call the REST API directly.
+// Connect an app that has a REST API but no MCP server: fetch its OpenAPI 3.x spec
+// and convert each operation to a tool. The REST calls themselves are in `restApp.ts`.
 import { parse as parseYaml } from 'yaml'
-import { execute, rows, trustedUrl, type Agent, type Connection, type Env } from './core'
-import { readLimitedText } from './discovery'
-import { agentAssertion } from './assertion'
-import { appToken } from './oauth'
+import { MAX_OPENAPI_TOOLS, MAX_SCHEMA_BYTES, MAX_SPEC_BYTES, SPEC_FETCH_TIMEOUT_MS } from '../constants'
+import type { Env } from '../types/env'
+import type { ImportedSpec, ImportedTool, JsonObject, ParamLocation } from '../types/tools'
+import { readLimitedText } from '../utils/http'
+import { trustedUrl } from '../utils/urls'
 
-type Json = Record<string, unknown>
-export type ParamLocation = { name: string; in: 'path' | 'query' | 'body' }
-export type ImportedTool = { name: string; description: string; method: string; path: string; inputSchema: Json; params: ParamLocation[] }
-export type ImportedSpec = { title: string; baseUrl: string; tools: ImportedTool[] }
-export type StoredTool = { connection_id: string; tool_name: string; description: string; method: string; path: string; input_schema: string; params: string }
-
-const MAX_SPEC_BYTES = 2_000_000
-const MAX_TOOLS = 300
-const MAX_SCHEMA_BYTES = 32_000
-const MAX_RESPONSE_BYTES = 100_000
 const METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const
-const reservedHeaders = new Set(['host', 'content-length', 'content-type', 'accept', 'agent-connect-assertion'])
 
+/** A problem with the spec that the user can fix. The message is shown in the control plane. */
 export class SpecError extends Error {}
 
-const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value)
+const isObject = (value: unknown): value is JsonObject => typeof value === 'object' && value !== null && !Array.isArray(value)
 
-function pointer(root: Json, ref: string): unknown {
+function pointer(root: JsonObject, ref: string): unknown {
   if (!ref.startsWith('#/')) throw new SpecError('Only references inside the same document are supported')
   let node: unknown = root
   for (const part of ref.slice(2).split('/')) {
@@ -34,7 +25,7 @@ function pointer(root: Json, ref: string): unknown {
 }
 
 /** Follow a top-level `$ref` (parameters, request bodies) without expanding the node's children. */
-function follow(root: Json, node: unknown): Json | null {
+function follow(root: JsonObject, node: unknown): JsonObject | null {
   for (let hops = 0; hops < 8 && isObject(node); hops++) {
     if (typeof node.$ref !== 'string') return node
     node = pointer(root, node.$ref)
@@ -43,7 +34,7 @@ function follow(root: Json, node: unknown): Json | null {
 }
 
 /** Inline `$ref`s and drop OpenAPI-only keywords so the result is plain JSON Schema. Cycles become `{}`. */
-function toJsonSchema(root: Json, node: unknown, depth = 0, active = new Set<string>()): unknown {
+function toJsonSchema(root: JsonObject, node: unknown, depth = 0, active = new Set<string>()): unknown {
   if (Array.isArray(node)) return node.map(item => toJsonSchema(root, item, depth + 1, active))
   if (!isObject(node)) return node
   if (depth > 12) return {}
@@ -52,7 +43,7 @@ function toJsonSchema(root: Json, node: unknown, depth = 0, active = new Set<str
     const next = new Set(active).add(node.$ref)
     return toJsonSchema(root, pointer(root, node.$ref) ?? {}, depth + 1, next)
   }
-  const output: Json = {}
+  const output: JsonObject = {}
   for (const [key, value] of Object.entries(node)) {
     if (key === 'nullable' || key === 'example' || key === 'xml' || key === 'externalDocs' || key === 'discriminator' || key.startsWith('x-')) continue
     // `properties` maps names to schemas, so its keys are not keywords and must not be filtered.
@@ -64,6 +55,7 @@ function toJsonSchema(root: Json, node: unknown, depth = 0, active = new Set<str
   return output
 }
 
+/** `operationId` in snake_case, or `<method>_<path>` when there is none. Duplicates get a numeric suffix. */
 function toolName(operationId: unknown, method: string, path: string, taken: Set<string>): string {
   const source = typeof operationId === 'string' && operationId.trim() ? operationId : `${method}_${path}`
   const base = source.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 60) || 'operation'
@@ -73,7 +65,7 @@ function toolName(operationId: unknown, method: string, path: string, taken: Set
   return name
 }
 
-function serverUrl(doc: Json, specUrl: string): string {
+function serverUrl(doc: JsonObject, specUrl: string): string {
   const server = Array.isArray(doc.servers) ? follow(doc, doc.servers[0]) : null
   let url = typeof server?.url === 'string' ? server.url : '/'
   const variables = isObject(server?.variables) ? server.variables : {}
@@ -85,6 +77,11 @@ function serverUrl(doc: Json, specUrl: string): string {
   return new URL(url, specUrl).toString()
 }
 
+/**
+ * Convert spec text (JSON or YAML) to tools. Each tool takes the operation's path and query
+ * parameters as top-level arguments and its JSON request body as `body`.
+ * Header and cookie parameters are ignored; operations that only take non-JSON bodies are skipped.
+ */
 export function parseSpec(text: string, specUrl: string, env: Env, baseOverride?: string): ImportedSpec {
   let doc: unknown
   try { doc = JSON.parse(text) } catch {
@@ -106,13 +103,13 @@ export function parseSpec(text: string, specUrl: string, env: Env, baseOverride?
     for (const method of METHODS) {
       const operation = follow(doc, item[method])
       if (!operation) continue
-      if (tools.length >= MAX_TOOLS) throw new SpecError(`The spec has more than ${MAX_TOOLS} operations`)
+      if (tools.length >= MAX_OPENAPI_TOOLS) throw new SpecError(`The spec has more than ${MAX_OPENAPI_TOOLS} operations`)
 
-      const properties: Json = {}
+      const properties: JsonObject = {}
       const required: string[] = []
       const params: ParamLocation[] = []
       // Operation-level parameters override path-level ones with the same name and location.
-      const declared = new Map<string, Json>()
+      const declared = new Map<string, JsonObject>()
       for (const raw of [...(Array.isArray(item.parameters) ? item.parameters : []), ...(Array.isArray(operation.parameters) ? operation.parameters : [])]) {
         const parameter = follow(doc, raw)
         if (parameter && typeof parameter.name === 'string') declared.set(`${parameter.in}:${parameter.name}`, parameter)
@@ -147,7 +144,7 @@ export function parseSpec(text: string, specUrl: string, env: Env, baseOverride?
         }
       }
 
-      let inputSchema: Json = { type: 'object', properties, ...(required.length ? { required } : {}) }
+      let inputSchema: JsonObject = { type: 'object', properties, ...(required.length ? { required } : {}) }
       if (JSON.stringify(inputSchema).length > MAX_SCHEMA_BYTES) {
         // Very large schemas cost too many tokens; keep the argument names and let the app validate.
         inputSchema = { type: 'object', properties: Object.fromEntries(Object.keys(properties).map(name => [name, {}])), ...(required.length ? { required } : {}) }
@@ -171,12 +168,13 @@ export function parseSpec(text: string, specUrl: string, env: Env, baseOverride?
   return { title, baseUrl, tools }
 }
 
+/** Fetch the spec and convert it. `baseOverride` replaces the spec's server URL. */
 export async function importSpec(specUrl: string, env: Env, baseOverride?: string): Promise<ImportedSpec> {
   let url: string
   try { url = trustedUrl(specUrl, env) } catch { throw new SpecError('The spec URL must be a public HTTPS URL') }
   let text: string
   try {
-    const response = await fetch(url, { headers: { Accept: 'application/json, application/yaml, text/yaml' }, redirect: 'manual', signal: AbortSignal.timeout(30_000) })
+    const response = await fetch(url, { headers: { Accept: 'application/json, application/yaml, text/yaml' }, redirect: 'manual', signal: AbortSignal.timeout(SPEC_FETCH_TIMEOUT_MS) })
     if (!response.ok) throw new Error('Spec request failed')
     text = await readLimitedText(response, MAX_SPEC_BYTES)
   } catch (error) {
@@ -184,88 +182,4 @@ export async function importSpec(specUrl: string, env: Env, baseOverride?: strin
     throw new SpecError('Could not fetch the spec within 30 seconds, or it is larger than 2 MB')
   }
   return parseSpec(text, url, env, baseOverride)
-}
-
-export async function saveTools(connectionId: string, tools: ImportedTool[], env: Env) {
-  await execute(env, 'DELETE FROM connection_tools WHERE connection_id = $1', [connectionId])
-  for (const tool of tools) {
-    await execute(env, 'INSERT INTO connection_tools (connection_id, tool_name, description, method, path, input_schema, params) VALUES ($1, $2, $3, $4, $5, $6, $7)', [
-      connectionId, tool.name, tool.description, tool.method, tool.path, JSON.stringify(tool.inputSchema), JSON.stringify(tool.params),
-    ])
-  }
-}
-
-export function storedTools(connection: Connection, env: Env): Promise<StoredTool[]> {
-  return rows<StoredTool>(env, 'SELECT * FROM connection_tools WHERE connection_id = $1 ORDER BY path, method', [connection.id])
-}
-
-/** How an API key is sent: a header name and an optional prefix such as "Bearer ". */
-export function apiKeyHeader(header: unknown, prefix: unknown): { header: string; prefix: string } | null {
-  const name = typeof header === 'string' && header.trim() ? header.trim() : 'Authorization'
-  const lead = typeof prefix === 'string' ? prefix : name.toLowerCase() === 'authorization' ? 'Bearer ' : ''
-  // RFC 9110 token characters; real APIs use names such as `api_key`.
-  if (!/^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,255}$/.test(name) || reservedHeaders.has(name.toLowerCase())) return null
-  if (lead.length > 64 || !/^[\x20-\x7e]*$/.test(lead)) return null
-  return { header: name, prefix: lead }
-}
-
-function credentialHeader(connection: Connection, token: string): [string, string] {
-  if (connection.auth_kind === 'api_key') return [connection.auth_header || 'Authorization', `${connection.auth_prefix ?? ''}${token}`]
-  return ['Authorization', `Bearer ${token}`]
-}
-
-function queryValue(value: unknown): string {
-  return typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value)
-}
-
-type ToolResult = { isError?: boolean; content: { type: 'text'; text: string }[] }
-const failed = (text: string): ToolResult => ({ isError: true, content: [{ type: 'text', text }] })
-
-export async function callOperation(connection: Connection, tool: StoredTool, args: Record<string, unknown>, agent: Agent, env: Env): Promise<ToolResult> {
-  const params = JSON.parse(tool.params) as ParamLocation[]
-  const base = new URL(trustedUrl(connection.mcp_url, env))
-
-  let invalid = ''
-  const path = tool.path.replace(/\{([^}]+)\}/g, (_match, name: string) => {
-    const value = args[name]
-    const segment = value === undefined || value === null || typeof value === 'object' ? '' : String(value)
-    // "." and ".." survive percent-encoding and would let an argument reach a different endpoint.
-    if (!segment || segment === '.' || segment === '..') invalid = name
-    return encodeURIComponent(segment)
-  })
-  if (invalid) return failed(`Invalid value for path parameter "${invalid}"`)
-
-  const url = new URL(base.pathname.replace(/\/$/, '') + path, base.origin)
-  for (const param of params) {
-    const value = args[param.name]
-    if (param.in !== 'query' || value === undefined || value === null) continue
-    if (Array.isArray(value)) for (const item of value) url.searchParams.append(param.name, queryValue(item))
-    else url.searchParams.set(param.name, queryValue(value))
-  }
-  if (url.origin !== base.origin) return failed('Request left the app origin')
-
-  const token = await appToken(connection, env)
-  const headers = new Headers({ Accept: 'application/json' })
-  headers.set(...credentialHeader(connection, token))
-  // The app can verify this to learn which agent acted; apps that ignore it still work.
-  headers.set('Agent-Connect-Assertion', await agentAssertion(agent, connection, tool.tool_name, token, env))
-  const hasBody = params.some(param => param.in === 'body') && args.body !== undefined
-  if (hasBody) headers.set('Content-Type', 'application/json')
-
-  const response = await fetch(url, {
-    method: tool.method,
-    headers,
-    body: hasBody ? JSON.stringify(args.body) : undefined,
-    redirect: 'manual',
-    signal: AbortSignal.timeout(30_000),
-  })
-  if (response.status >= 300 && response.status < 400) return failed('The app answered with a redirect, which is not followed')
-
-  let text = ''
-  if (response.body) {
-    try { text = await readLimitedText(response, MAX_RESPONSE_BYTES) }
-    catch { return failed(`HTTP ${response.status}: the response is larger than ${MAX_RESPONSE_BYTES / 1000} KB. Narrow the request.`) }
-  }
-  if (!response.ok) return failed(`HTTP ${response.status}${text ? `: ${text.slice(0, 2000)}` : ''}`)
-  return { content: [{ type: 'text', text: text || `HTTP ${response.status}` }] }
 }

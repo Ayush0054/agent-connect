@@ -9,18 +9,39 @@ You connect an app once with its normal OAuth sign-in. Then any MCP host (Claude
 ## How it works
 
 ```text
-MCP host (Claude Code, Codex, Agno, …)
-        │  MCP + OAuth token bound to one agent
-        ▼
-Agent Connect gateway  (Hono on Cloudflare Workers, Neon Postgres)
-  ├─ host OAuth: metadata, client registration, consent, tokens
-  ├─ per-agent tool grants, checked on every call
-  ├─ encrypted app OAuth tokens, refreshed automatically
-  └─ activity log
-        │  app OAuth token + short-lived ES256 assertion naming the agent
-        ▼
-App MCP server ── @agent-connect/server-sdk verifies the agent
+        YOU, in a browser                         AN AI AGENT
+  control plane and consent page        inside an MCP host: Claude Code,
+                                        Codex, Cursor, Agno, LangGraph, …
+              │                                        │
+              │ admin origin                           │ MCP origin
+              │ (Cloudflare Access)                    │ (token of one agent)
+              ▼                                        ▼
+ ┌────────────────────────────────────────────────────────────────────────┐
+ │  AGENT CONNECT   one Cloudflare Worker, code in apps/gateway           │
+ │                                                                        │
+ │  /api/*            connect apps,           /mcp   on every tool call:  │
+ │                    create agents,                 1. find the agent    │
+ │                    grant tools,                   2. check its grant   │
+ │                    read activity                  3. call the app      │
+ │  /oauth/authorize  consent page                   4. log the outcome   │
+ │                                                                        │
+ │  Neon Postgres                                                         │
+ │    agents            who may call                                      │
+ │    connections       which apps, with their encrypted credentials      │
+ │    connection_tools  tools imported from OpenAPI specs                 │
+ │    grants            agent + app + tool that is allowed                │
+ │    action_log        every tool call and its outcome                   │
+ └────────────────────────────────────────────────────────────────────────┘
+              │                                        │
+              │ app OAuth token                        │ API key or OAuth token
+              │ + signed agent assertion               │ + signed agent assertion
+              ▼                                        ▼
+   APP WITH AN MCP SERVER                   APP WITH ONLY A REST API
+   verifies the agent with                  described by an OpenAPI spec,
+   @agent-connect/server-sdk                no code changes in the app
 ```
+
+Read it top to bottom: you decide in the browser which agent may use which tool; the agent's host talks MCP to Agent Connect; Agent Connect calls the app with the app's own credential and tells the app which agent is acting.
 
 1. **Connect an app.** The app publishes `/.well-known/agent-connect.json` with the server SDK. You paste its URL into the control plane, sign in on the app's own OAuth page, and the gateway stores the app token encrypted.
 2. **Connect a host.** Add the gateway's MCP URL to your host. The host follows the standard MCP authorization flow: protected resource metadata, dynamic client registration or a client ID metadata document, PKCE. You approve it on a consent page:
@@ -62,6 +83,39 @@ Limits of the adapter: OpenAPI 3.x only (JSON or YAML, up to 2 MB and 300 operat
 | `examples/legacy-api` | Example REST API with an API key and an OpenAPI spec, and no MCP server, connected through the OpenAPI adapter |
 
 The gateway serves two origins. The admin origin hosts the control plane and consent page behind Cloudflare Access. The MCP origin serves `/mcp`, the OAuth endpoints for hosts, and the JWKS apps use to verify assertions.
+
+## Code layout
+
+`apps/gateway/src` is organised by what the code does. A request enters through `routes/`, which calls plain functions in the other folders.
+
+```text
+apps/gateway/src
+├─ index.ts       Worker entry point
+├─ app.ts         mounts the routes and the middleware
+├─ constants.ts   size limits, timeouts, token lifetimes
+├─ types/         data shapes only, no logic
+│    api.ts         the /api contract, imported by apps/web as well
+│    agents.ts  connections.ts  tools.ts  hostAuth.ts  env.ts
+├─ routes/        HTTP endpoints: read the request, call a function, answer
+│    api/           /api/overview, /api/agents, /api/connections, /api/grants
+│    mcp.ts         /mcp, the endpoint MCP hosts talk to
+│    oauth.ts       /oauth/register, authorize, token (hosts) and callback (apps)
+│    wellKnown.ts   OAuth metadata and the public keys for assertions
+├─ middleware/    adminAuth: who is signed in to the control plane
+├─ mcp/           the MCP server built for one agent, and its tool list
+├─ hostAuth/      sign-in of MCP hosts: client checks, tokens, consent page HTML
+├─ upstream/      everything that calls a connected app
+│    appOAuth.ts    sign in to the app, store and refresh its tokens
+│    mcpApp.ts      call an app that has an MCP server
+│    openapiSpec.ts fetch an OpenAPI spec and convert operations to tools
+│    restApp.ts     call an app that has only a REST API
+│    assertion.ts   the signed JWT that names the agent
+│    discovery.ts   read an app's /.well-known/agent-connect.json
+├─ stores/        all SQL, one file per table or table group
+└─ utils/         encryption and hashing, URL safety check, size-limited reads
+```
+
+What we are building is in [docs/SPEC.md](docs/SPEC.md). Decisions and what has been implemented are in [docs/LOG.md](docs/LOG.md).
 
 ## Local development
 
